@@ -29,6 +29,7 @@ func (wk *Worker) DoJob(arg *DoJobArgs, res *DoJobReply) error {
 	case Reduce:
 		DoReduce(arg.JobNumber, arg.File, arg.NumOtherPhase, wk.Reduce)
 	}
+	//fmt.Printf("DoJob: Finished\n")
 	res.OK = true
 	return nil
 }

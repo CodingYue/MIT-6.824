@@ -1,15 +1,17 @@
 package mapreduce
 
-import "testing"
-import "fmt"
-import "time"
-import "container/list"
-import "strings"
-import "os"
-import "bufio"
-import "log"
-import "sort"
-import "strconv"
+import (
+	"bufio"
+	"container/list"
+	"fmt"
+	"log"
+	"os"
+	"sort"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+)
 
 const (
 	nNumber = 100000
