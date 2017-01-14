@@ -10,23 +10,60 @@ import "os"
 import "sync/atomic"
 
 type ViewServer struct {
-	mu       sync.Mutex
-	l        net.Listener
-	dead     int32 // for testing
-	rpccount int32 // for testing
-	me       string
-
-
-	// Your declarations here.
+	mu             sync.Mutex
+	l              net.Listener
+	dead           int32 // for testing
+	rpccount       int32 // for testing
+	me             string
+	view           View
+	lastPingTime   map[string]time.Time
+	hasAcknowledge bool
+	idleServer     string
 }
 
 //
 // server Ping RPC handler.
 //
+func (vs *ViewServer) ChangeView(primary string, backup string) {
+	vs.view = View{vs.view.Viewnum + 1, primary, backup}
+	vs.hasAcknowledge = false
+}
+
+func debugView(view View) {
+	log.Printf("viewNum %d, Primary %s, Backup %s", view.Viewnum, view.Primary, view.Backup)
+}
+
 func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
+	vs.mu.Lock()
 
-	// Your code here.
+	client := args.Me
+	viewNum := args.Viewnum
 
+	vs.lastPingTime[client] = time.Now()
+
+	switch client {
+	case vs.view.Primary:
+		if viewNum == 0 {
+			vs.ChangeView(vs.view.Backup, "")
+		} else if vs.view.Viewnum == viewNum {
+			vs.hasAcknowledge = true
+		}
+	case vs.view.Backup:
+		if viewNum == 0 && vs.hasAcknowledge {
+			vs.ChangeView(vs.view.Primary, vs.idleServer)
+		}
+	default:
+		//log.Printf("client %s, viewNum %d\n", client, vs.view.Viewnum)
+		if vs.view.Viewnum == 0 {
+			vs.ChangeView(client, "")
+		} else {
+			vs.idleServer = client
+		}
+		//log.Printf("client %s, viewNum %d\n", client, vs.view.Viewnum)
+	}
+	reply.View = vs.view
+
+	vs.mu.Unlock()
 	return nil
 }
 
@@ -34,21 +71,40 @@ func (vs *ViewServer) Ping(args *PingArgs, reply *PingReply) error {
 // server Get() RPC handler.
 //
 func (vs *ViewServer) Get(args *GetArgs, reply *GetReply) error {
-
-	// Your code here.
-
+	vs.mu.Lock()
+	reply.View = vs.view
+	vs.mu.Unlock()
 	return nil
 }
 
+func (vs *ViewServer) isOverTime(t time.Time, expectedTime time.Time) bool {
+	return t.Sub(expectedTime) >= DeadPings*PingInterval
+}
 
 //
 // tick() is called once per PingInterval; it should notice
 // if servers have died or recovered, and change the view
 // accordingly.
 //
-func (vs *ViewServer) tick() {
 
-	// Your code here.
+func (vs *ViewServer) tick() {
+	vs.mu.Lock()
+	if vs.isOverTime(time.Now(), vs.lastPingTime[vs.idleServer]) {
+		vs.idleServer = ""
+	}
+	if vs.isOverTime(time.Now(), vs.lastPingTime[vs.view.Backup]) {
+		if vs.hasAcknowledge {
+			vs.ChangeView(vs.view.Primary, vs.idleServer)
+			vs.idleServer = ""
+		}
+	}
+	if vs.isOverTime(time.Now(), vs.lastPingTime[vs.view.Primary]) {
+		if vs.hasAcknowledge {
+			vs.ChangeView(vs.view.Backup, vs.idleServer)
+			vs.idleServer = ""
+		}
+	}
+	vs.mu.Unlock()
 }
 
 //
@@ -77,6 +133,9 @@ func StartServer(me string) *ViewServer {
 	vs := new(ViewServer)
 	vs.me = me
 	// Your vs.* initializations here.
+	vs.view = View{Primary: "", Backup: "", Viewnum: 0}
+	vs.lastPingTime = make(map[string]time.Time)
+	vs.hasAcknowledge = false
 
 	// tell net/rpc about our RPC server and handlers.
 	rpcs := rpc.NewServer()
