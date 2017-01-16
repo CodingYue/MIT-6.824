@@ -22,18 +22,35 @@ type PBServer struct {
 	vs         *viewservice.Clerk
 	view       viewservice.View
 	keyValue   map[string]string
-	lastArgs   PutAppendArgs
+	lastArgs   map[string]PutAppendArgs
+}
+
+func (pb *PBServer) UpdateView() {
+	currentView, _ := pb.vs.Ping(pb.view.Viewnum)
+	if currentView.Viewnum != pb.view.Viewnum {
+
+		if currentView.Primary == pb.me && pb.view.Backup != currentView.Backup && currentView.Backup != "" {
+			for k, v := range pb.keyValue {
+				//log.Printf("key : %s, value : %s, backup %s\n", k, v, currentView.Backup)
+				args := &PutAppendArgs{Key: k, Value: v, Operation: Put, From: pb.me}
+				reply := PutAppendReply{}
+				ok := call(currentView.Backup, "PBServer.PutAppend", args, &reply)
+				for !ok || reply.Err != OK {
+					ok = call(currentView.Backup, "PBServer.PutAppend", args, &reply)
+				}
+			}
+		}
+
+		pb.view = currentView
+	}
 }
 
 func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
 	if pb.view.Primary != pb.me {
-		pb.view, _ = pb.vs.Ping(pb.view.Viewnum)
-		if pb.view.Primary != pb.me {
-			reply.Err = ErrWrongServer
-			return nil
-		}
+		reply.Err = ErrWrongServer
+		return nil
 	}
 	if value, ok := pb.keyValue[args.Key]; ok {
 		reply.Value = value
@@ -48,11 +65,10 @@ func (pb *PBServer) Get(args *GetArgs, reply *GetReply) error {
 func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
-	if *args == pb.lastArgs {
+	if *args == pb.lastArgs[args.From] {
 		reply.Err = OK
 		return nil
 	}
-	pb.lastArgs = *args
 	if pb.view.Primary == pb.me && pb.view.Backup != "" {
 		ok := call(pb.view.Backup, "PBServer.PutAppend", args, reply)
 		if !ok {
@@ -64,6 +80,7 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 	} else {
 		pb.keyValue[args.Key] = args.Value
 	}
+	pb.lastArgs[args.From] = *args
 	reply.Err = OK
 	return nil
 }
@@ -78,24 +95,7 @@ func (pb *PBServer) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error 
 func (pb *PBServer) tick() {
 	pb.mu.Lock()
 	defer pb.mu.Unlock()
-
-	currentView, _ := pb.vs.Ping(pb.view.Viewnum)
-	if currentView.Viewnum != pb.view.Viewnum {
-
-		if pb.view.Primary == pb.me && pb.view.Backup != currentView.Backup && currentView.Backup != "" {
-			for k, v := range pb.keyValue {
-				//log.Printf("key : %s, value : %s, backup %s\n", k, v, currentView.Backup)
-				args := &PutAppendArgs{Key: k, Value: v, Operation: Put}
-				reply := PutAppendReply{}
-				ok := call(currentView.Backup, "PBServer.PutAppend", args, &reply)
-				for !ok || reply.Err != OK {
-					ok = call(currentView.Backup, "PBServer.PutAppend", args, &reply)
-				}
-			}
-		}
-
-		pb.view = currentView
-	}
+	pb.UpdateView()
 }
 
 // tell the server to shut itself down.
@@ -128,6 +128,7 @@ func StartServer(vshost string, me string) *PBServer {
 	pb.me = me
 	pb.vs = viewservice.MakeClerk(me, vshost)
 	pb.keyValue = make(map[string]string)
+	pb.lastArgs = make(map[string]PutAppendArgs)
 	pb.view = viewservice.View{Primary: "", Backup: "", Viewnum: 0}
 
 	rpcs := rpc.NewServer()

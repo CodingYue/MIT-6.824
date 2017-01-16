@@ -3,11 +3,14 @@ package pbservice
 import (
 	"crypto/rand"
 	"math/big"
+	"strconv"
+	"time"
 	"viewservice"
 )
 
 type Clerk struct {
 	vs      *viewservice.Clerk
+	me      string
 	primary string
 	// Your declarations here
 }
@@ -24,6 +27,7 @@ func MakeClerk(vshost string, me string) *Clerk {
 	ck := new(Clerk)
 	ck.vs = viewservice.MakeClerk(me, vshost)
 	ck.primary = ""
+	ck.me = strconv.Itoa(int(nrand()))
 
 	return ck
 }
@@ -38,16 +42,15 @@ func MakeClerk(vshost string, me string) *Clerk {
 func (ck *Clerk) Get(key string) string {
 	for ck.primary == "" {
 		ck.primary = ck.vs.Primary()
+		time.Sleep(viewservice.PingInterval)
 	}
 	args := &GetArgs{Key: key}
 	reply := GetReply{}
-
-	var ok bool
-	ok = call(ck.primary, "PBServer.Get", args, &reply)
+	ok := call(ck.primary, "PBServer.Get", args, &reply)
 	for reply.Err != OK || !ok {
+		time.Sleep(viewservice.PingInterval)
 		ck.primary = ck.vs.Primary()
 		ok = call(ck.primary, "PBServer.Get", args, &reply)
-		//log.Printf("primray %s, err %s\n", ck.primary, reply.Err)
 	}
 
 	return reply.Value
@@ -60,11 +63,13 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 
 	for ck.primary == "" {
 		ck.primary = ck.vs.Primary()
+		time.Sleep(viewservice.PingInterval)
 	}
-	args := &PutAppendArgs{Key: key, Value: value, Operation: op}
+	args := &PutAppendArgs{Key: key, Value: value, Operation: op, From: ck.me}
 	reply := PutAppendReply{}
 	ok := call(ck.primary, "PBServer.PutAppend", args, &reply)
 	for reply.Err != OK || !ok {
+		time.Sleep(viewservice.PingInterval)
 		ck.primary = ck.vs.Primary()
 		ok = call(ck.primary, "PBServer.PutAppend", args, &reply)
 	}

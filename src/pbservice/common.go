@@ -20,6 +20,7 @@ type PutAppendArgs struct {
 	Key       string
 	Value     string
 	Operation string
+	From      string
 	// You'll have to add definitions here.
 
 	// Field names must start with capital letters,
