@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"math/big"
 	"net/rpc"
-	"time"
+	"sync"
 )
 
 type Clerk struct {
+	mu      sync.Mutex
 	servers []string
+	id      int64
+	seq     int
 	// You will have to modify this struct.
 }
 
@@ -23,6 +26,7 @@ func nrand() int64 {
 func MakeClerk(servers []string) *Clerk {
 	ck := new(Clerk)
 	ck.servers = servers
+	ck.id = nrand()
 	// You'll have to add code here.
 	return ck
 }
@@ -67,7 +71,10 @@ func call(srv string, rpcname string,
 // keeps trying forever in the face of all other errors.
 //
 func (ck *Clerk) Get(key string) string {
-	args := &GetArgs{Key: key, TimeStamp: time.Now()}
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	ck.seq++
+	args := &GetArgs{Key: key, ClientID: ck.id, Seq: ck.seq}
 	reply := GetReply{}
 	idx := 0
 	for {
@@ -83,7 +90,10 @@ func (ck *Clerk) Get(key string) string {
 // shared by Put and Append.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	args := &PutAppendArgs{Key: key, Value: value, Op: op, TimeStamp: time.Now()}
+	ck.mu.Lock()
+	defer ck.mu.Unlock()
+	ck.seq++
+	args := &PutAppendArgs{Key: key, Value: value, Op: op, Seq: ck.seq, ClientID: ck.id}
 	reply := PutAppendReply{}
 	idx := 0
 	for {

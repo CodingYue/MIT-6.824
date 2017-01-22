@@ -12,10 +12,11 @@ type Err string
 // Put or Append
 type PutAppendArgs struct {
 	// You'll have to add definitions here.
-	Key       string
-	Value     string
-	Op        string
-	TimeStamp time.Time
+	Key      string
+	Value    string
+	Op       string
+	ClientID int64
+	Seq      int
 	// "Put" or "Append"
 	// You'll have to add definitions here.
 	// Field names must start with capital letters,
@@ -29,6 +30,8 @@ type PutAppendReply struct {
 type GetArgs struct {
 	Key       string
 	TimeStamp time.Time
+	ClientID  int64
+	Seq       int
 	// You'll have to add definitions here.
 }
 
