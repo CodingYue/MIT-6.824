@@ -1,10 +1,12 @@
 package kvpaxos
 
-import "net/rpc"
-import "crypto/rand"
-import "math/big"
-
-import "fmt"
+import (
+	"crypto/rand"
+	"fmt"
+	"math/big"
+	"net/rpc"
+	"time"
+)
 
 type Clerk struct {
 	servers []string
@@ -65,15 +67,32 @@ func call(srv string, rpcname string,
 // keeps trying forever in the face of all other errors.
 //
 func (ck *Clerk) Get(key string) string {
-	// You will have to modify this function.
-	return ""
+	args := &GetArgs{Key: key, TimeStamp: time.Now()}
+	reply := GetReply{}
+	idx := 0
+	for {
+		ok := call(ck.servers[idx], "KVPaxos.Get", args, &reply)
+		if ok && reply.Err == OK {
+			break
+		}
+	}
+	return reply.Value
 }
 
 //
 // shared by Put and Append.
 //
 func (ck *Clerk) PutAppend(key string, value string, op string) {
-	// You will have to modify this function.
+	args := &PutAppendArgs{Key: key, Value: value, Op: op, TimeStamp: time.Now()}
+	reply := PutAppendReply{}
+	idx := 0
+	for {
+		ok := call(ck.servers[idx], "KVPaxos.PutAppend", args, &reply)
+		if ok && reply.Err == OK {
+			break
+		}
+		idx = (idx + 1) % len(ck.servers)
+	}
 }
 
 func (ck *Clerk) Put(key string, value string) {

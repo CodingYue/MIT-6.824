@@ -1,14 +1,17 @@
 package kvpaxos
 
-import "testing"
-import "runtime"
-import "strconv"
-import "os"
-import "time"
-import "fmt"
-import "math/rand"
-import "strings"
-import "sync/atomic"
+import (
+	"fmt"
+	"log"
+	"math/rand"
+	"os"
+	"runtime"
+	"strconv"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 func check(t *testing.T, ck *Clerk, key string, value string) {
 	v := ck.Get(key)
@@ -158,6 +161,8 @@ func TestDone(t *testing.T) {
 			check(t, cka[i%nservers], key, string(value))
 		}
 	}
+
+	log.Printf("hello")
 
 	// Put and Get to each of the replicas, in case
 	// the Done information is piggybacked on
@@ -398,8 +403,8 @@ func TestUnreliable(t *testing.T) {
 
 	fmt.Printf("Test: Sequence of puts, unreliable ...\n")
 
-	for iters := 0; iters < 6; iters++ {
-		const ncli = 5
+	for iters := 0; iters < 1; iters++ {
+		const ncli = 1
 		var ca [ncli]chan bool
 		for cli := 0; cli < ncli; cli++ {
 			ca[cli] = make(chan bool)
@@ -417,7 +422,7 @@ func TestUnreliable(t *testing.T) {
 				vv = NextValue(vv, "2")
 				time.Sleep(100 * time.Millisecond)
 				if myck.Get(key) != vv {
-					t.Fatalf("wrong value")
+					t.Fatalf("wrong value,  me %d,vv %s, v %s", me, vv, myck.Get(key))
 				}
 				if myck.Get(key) != vv {
 					t.Fatalf("wrong value")

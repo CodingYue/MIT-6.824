@@ -418,9 +418,10 @@ func (px *Paxos) Min() int {
 // it should not contact other Paxos peers.
 //
 func (px *Paxos) Status(seq int) (Fate, interface{}) {
+	currentMin := px.Min()
 	px.mu.Lock()
 	defer px.mu.Unlock()
-	if seq < px.doneMax[px.me] {
+	if seq < currentMin {
 		return Forgotten, nil
 	}
 	if decidedValue := getDecidedValue(px.isDecided, seq); decidedValue != nil {
