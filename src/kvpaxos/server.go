@@ -33,15 +33,15 @@ type Op struct {
 }
 
 type KVPaxos struct {
-	mu         sync.Mutex
-	l          net.Listener
-	me         int
-	dead       int32 // for testing
-	unreliable int32 // for testing
-	px         *paxos.Paxos
-	lastApply  int
-	KVMap      map[string]string
-	isLogApply map[Op]bool
+	mu           sync.Mutex
+	l            net.Listener
+	me           int
+	dead         int32 // for testing
+	unreliable   int32 // for testing
+	px           *paxos.Paxos
+	lastApply    int
+	KVMap        map[string]string
+	lastApplyLog Op
 }
 
 func (kv *KVPaxos) Wait(seq int) interface{} {
@@ -74,6 +74,7 @@ func (kv *KVPaxos) Apply(op Op) interface{} {
 		}
 		kv.KVMap[op.Key] = value + op.Value
 	}
+	kv.lastApplyLog = op
 	//kv.isLogApply[op] = true
 	return nil
 }
@@ -85,10 +86,13 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 	DPrintf("Get key %s", args.Key)
 
 	v := Op{Key: args.Key, Operation: "Get", TimeStamp: args.TimeStamp}
-	if isApply, ok := kv.isLogApply[v]; ok && isApply {
+	if v.TimeStamp.Before(kv.lastApplyLog.TimeStamp) {
+		//if isApply, ok := kv.isLogApply[v]; ok && isApply {
+		reply.Err = OK
+		reply.Value = kv.KVMap[v.Key]
 		return nil
 	}
-	seq := 0
+	seq := kv.lastApply + 1
 	for {
 		kv.px.Start(seq, v)
 		decidedValue := kv.Wait(seq)
@@ -96,7 +100,6 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 			break
 		}
 		seq++
-		log.Printf("Holy shit %d", seq)
 	}
 	for ; kv.lastApply+1 < seq; kv.lastApply++ {
 		decidedValue := kv.Wait(kv.lastApply + 1)
@@ -105,7 +108,7 @@ func (kv *KVPaxos) Get(args *GetArgs, reply *GetReply) error {
 
 	reply.Value = kv.KVMap[args.Key]
 	reply.Err = OK
-	//kv.px.Done(kv.lastApply)
+	kv.px.Done(kv.lastApply)
 	//log.Printf("Reply %v", reply)
 	return nil
 }
@@ -117,10 +120,12 @@ func (kv *KVPaxos) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	DPrintf("PutAppend key %s, value %s, op %s", args.Key, args.Value, args.Op)
 
 	v := Op{Key: args.Key, Value: args.Value, Operation: args.Op, TimeStamp: args.TimeStamp}
-	if isApply, ok := kv.isLogApply[v]; ok && isApply {
+	if v.TimeStamp.Before(kv.lastApplyLog.TimeStamp) {
+		//if isApply, ok := kv.isLogApply[v]; ok && isApply {
+		reply.Err = OK
 		return nil
 	}
-	seq := 0
+	seq := kv.lastApply + 1
 	for {
 		kv.px.Start(seq, v)
 		decidedValue := kv.Wait(seq)
@@ -175,7 +180,7 @@ func StartServer(servers []string, me int) *KVPaxos {
 	kv := new(KVPaxos)
 	kv.me = me
 	kv.KVMap = make(map[string]string)
-	kv.isLogApply = make(map[Op]bool)
+	//kv.isLogApply = make(map[Op]bool)
 	kv.lastApply = -1
 
 	// Your initialization code here.
