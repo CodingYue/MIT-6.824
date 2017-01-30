@@ -39,6 +39,52 @@ type Op struct {
 	Args      interface{}
 }
 
+func (sm *ShardMaster) Rebalance(config *Config, deleteGID int64) {
+
+	// groupUsed := make(map[int64]int)
+	// for k, _ := range config.Groups {
+	// 	groupUsed[k] = 0
+	// }
+	// for i := 0; i < NShards; i++ {
+	// 	used := -1
+	// 	best := int64(-1)
+	// 	for k, v := range groupUsed {
+	// 		if best == -1 || used > v {
+	// 			used = v
+	// 			best = k
+	// 		}
+	// 	}
+	// 	config.Shards[i] = best
+	// 	groupUsed[best]++
+	// }
+	nGroup := len(config.Groups)
+	limit := NShards / nGroup
+
+	for i := 0; i < NShards; i++ {
+		if config.Shards[i] == deleteGID {
+			config.Shards[i] = 0
+		}
+	}
+
+	counts := map[int64]int{}
+	for i := 0; i < NShards; i++ {
+		counts[config.Shards[i]]++
+	}
+
+	for i := 0; i < NShards; i++ {
+		if config.Shards[i] == 0 || counts[config.Shards[i]] > limit {
+			for k := range config.Groups {
+				if counts[k] < limit {
+					counts[config.Shards[i]]--
+					counts[k]++
+					config.Shards[i] = k
+				}
+			}
+		}
+	}
+
+}
+
 func (sm *ShardMaster) Apply(op Op) {
 	lastConfig := sm.configs[sm.lastApply]
 	var newConfig Config
@@ -56,39 +102,20 @@ func (sm *ShardMaster) Apply(op Op) {
 		joinArgs := op.Args.(JoinArgs)
 		newConfig.Groups[joinArgs.GID] = joinArgs.Servers
 		newConfig.Num++
-		for i := 0; i < NShards; i++ {
-			newConfig.Shards[i] = joinArgs.GID
-		}
+		sm.Rebalance(&newConfig, 0)
 
 	case Leave:
 		leaveArgs := op.Args.(LeaveArgs)
 		delete(newConfig.Groups, leaveArgs.GID)
 		newConfig.Num++
-
-		groupUsed := make(map[int64]int)
-		for i := 0; i < NShards; i++ {
-			groupUsed[newConfig.Shards[i]]++
-		}
-		for i := 0; i < NShards; i++ {
-			used := -1
-			best := int64(-1)
-			if newConfig.Shards[i] == leaveArgs.GID {
-				for k, v := range groupUsed {
-					if best == -1 || used > v {
-						used = v
-						best = k
-					}
-				}
-				newConfig.Shards[i] = best
-			}
-		}
+		sm.Rebalance(&newConfig, leaveArgs.GID)
 
 	case Move:
 		moveArgs := op.Args.(MoveArgs)
 		newConfig.Shards[moveArgs.Shard] = moveArgs.GID
 		newConfig.Num++
 	case Query:
-
+		sm.px.Done(sm.lastApply)
 	default:
 		break
 	}
@@ -111,7 +138,7 @@ func (sm *ShardMaster) Wait(seq int) Op {
 }
 
 func (sm *ShardMaster) Propose(op Op) {
-	log.Printf("%v", op)
+	// log.Printf("%v", op)
 	seq := sm.lastApply + 1
 	for {
 		sm.px.Start(seq, op)
@@ -120,7 +147,6 @@ func (sm *ShardMaster) Propose(op Op) {
 		if reflect.DeepEqual(value, op) {
 			break
 		}
-		// break
 		seq++
 	}
 }
