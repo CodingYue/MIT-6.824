@@ -32,6 +32,31 @@ Map operations must be predeceds Reduce operations.
 
 A naive replication system - Primary/Backup
 
-ViewServer maintains a view that show which is Primary & Backup.
+ViewServer maintains a view that shows which server is Primary & Backup.
+
+When Primary finds that Backup exists, Primary must sync its data to Backup.
+
+### Part A
+
+Viewservice directory. 
+
+client.go in this part describes Primary or Backup server.
+Each client has its view sent by ViewServer. 
+
+Client use heart beat method tell ViewServer that it it alive(PING ViewServer every PingInterval)
+
+server.go in this part describes ViewServer.
+
+It will call tick() evrey PingInterval. In tick() it will determines whether backcup and primary are dead.
+It will also handle PING request. 
 
 
+### Part B
+
+Maintains K-V model.
+
+Client sends request(Get, Append, Put) to server. Server try to send operations to Primary.
+If fail, server will retrieve view from ViewServer.
+
+And Primary will also try to send operations to backup if backup exists.
+Primary will return SUCCESS FLAG if and only backup return SUCCESS FLAG.
