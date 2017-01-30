@@ -12,6 +12,8 @@ import "os"
 import "syscall"
 import "encoding/gob"
 import "math/rand"
+import "time"
+import "reflect"
 
 type ShardMaster struct {
 	mu         sync.Mutex
@@ -21,36 +23,144 @@ type ShardMaster struct {
 	unreliable int32 // for testing
 	px         *paxos.Paxos
 
-	configs []Config // indexed by config num
+	lastApply int
+	configs   []Config // indexed by config num
 }
 
+const (
+	Join  = "Join"
+	Leave = "Leave"
+	Move  = "Move"
+	Query = "Query"
+)
 
 type Op struct {
-	// Your data here.
+	Operation string
+	Args      interface{}
 }
 
+func (sm *ShardMaster) Apply(op Op) {
+	lastConfig := sm.configs[sm.lastApply]
+	var newConfig Config
+	newConfig.Num = lastConfig.Num
+	newConfig.Groups = make(map[int64][]string)
+	for k, v := range lastConfig.Groups {
+		newConfig.Groups[k] = v
+	}
+	for i := 0; i < NShards; i++ {
+		newConfig.Shards[i] = lastConfig.Shards[i]
+	}
+
+	switch op.Operation {
+	case Join:
+		joinArgs := op.Args.(JoinArgs)
+		newConfig.Groups[joinArgs.GID] = joinArgs.Servers
+		newConfig.Num++
+		for i := 0; i < NShards; i++ {
+			newConfig.Shards[i] = joinArgs.GID
+		}
+
+	case Leave:
+		leaveArgs := op.Args.(LeaveArgs)
+		delete(newConfig.Groups, leaveArgs.GID)
+		newConfig.Num++
+
+		groupUsed := make(map[int64]int)
+		for i := 0; i < NShards; i++ {
+			groupUsed[newConfig.Shards[i]]++
+		}
+		for i := 0; i < NShards; i++ {
+			used := -1
+			best := int64(-1)
+			if newConfig.Shards[i] == leaveArgs.GID {
+				for k, v := range groupUsed {
+					if best == -1 || used > v {
+						used = v
+						best = k
+					}
+				}
+				newConfig.Shards[i] = best
+			}
+		}
+
+	case Move:
+		moveArgs := op.Args.(MoveArgs)
+		newConfig.Shards[moveArgs.Shard] = moveArgs.GID
+		newConfig.Num++
+	case Query:
+
+	default:
+		break
+	}
+	sm.configs = append(sm.configs, newConfig)
+	sm.lastApply++
+}
+
+func (sm *ShardMaster) Wait(seq int) Op {
+	sleepTime := 10 * time.Microsecond
+	for {
+		decided, value := sm.px.Status(seq)
+		if decided == paxos.Decided {
+			return value.(Op)
+		}
+		time.Sleep(sleepTime)
+		if sleepTime < 10*time.Second {
+			sleepTime *= 2
+		}
+	}
+}
+
+func (sm *ShardMaster) Propose(op Op) {
+	log.Printf("%v", op)
+	seq := sm.lastApply + 1
+	for {
+		sm.px.Start(seq, op)
+		value := sm.Wait(seq)
+		sm.Apply(value)
+		if reflect.DeepEqual(value, op) {
+			break
+		}
+		// break
+		seq++
+	}
+}
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
-	// Your code here.
-
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	op := Op{Args: *args, Operation: Join}
+	sm.Propose(op)
 	return nil
 }
 
 func (sm *ShardMaster) Leave(args *LeaveArgs, reply *LeaveReply) error {
-	// Your code here.
-
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	op := Op{Args: *args, Operation: Leave}
+	sm.Propose(op)
 	return nil
 }
 
 func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
-	// Your code here.
-
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	op := Op{Args: *args, Operation: Move}
+	sm.Propose(op)
 	return nil
 }
 
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
-	// Your code here.
-
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	op := Op{Args: *args, Operation: Query}
+	sm.Propose(op)
+	for i := 0; i < sm.lastApply; i++ {
+		if sm.configs[i].Num == args.Num {
+			reply.Config = sm.configs[i]
+			return nil
+		}
+	}
+	reply.Config = sm.configs[sm.lastApply]
 	return nil
 }
 
@@ -86,6 +196,12 @@ func (sm *ShardMaster) isunreliable() bool {
 // me is the index of the current server in servers[].
 //
 func StartServer(servers []string, me int) *ShardMaster {
+	gob.Register(Op{})
+	gob.Register(JoinArgs{})
+	gob.Register(LeaveArgs{})
+	gob.Register(MoveArgs{})
+	gob.Register(QueryArgs{})
+
 	sm := new(ShardMaster)
 	sm.me = me
 
@@ -94,7 +210,6 @@ func StartServer(servers []string, me int) *ShardMaster {
 
 	rpcs := rpc.NewServer()
 
-	gob.Register(Op{})
 	rpcs.Register(sm)
 	sm.px = paxos.Make(servers, me, rpcs)
 
