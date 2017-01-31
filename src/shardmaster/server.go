@@ -40,23 +40,6 @@ type Op struct {
 }
 
 func (sm *ShardMaster) Rebalance(config *Config, deleteGID int64) {
-
-	// groupUsed := make(map[int64]int)
-	// for k, _ := range config.Groups {
-	// 	groupUsed[k] = 0
-	// }
-	// for i := 0; i < NShards; i++ {
-	// 	used := -1
-	// 	best := int64(-1)
-	// 	for k, v := range groupUsed {
-	// 		if best == -1 || used > v {
-	// 			used = v
-	// 			best = k
-	// 		}
-	// 	}
-	// 	config.Shards[i] = best
-	// 	groupUsed[best]++
-	// }
 	nGroup := len(config.Groups)
 	limit := NShards / nGroup
 
@@ -73,13 +56,20 @@ func (sm *ShardMaster) Rebalance(config *Config, deleteGID int64) {
 
 	for i := 0; i < NShards; i++ {
 		if config.Shards[i] == 0 || counts[config.Shards[i]] > limit {
+			min := -1
+			best := int64(-1)
 			for k := range config.Groups {
-				if counts[k] < limit {
-					counts[config.Shards[i]]--
-					counts[k]++
-					config.Shards[i] = k
+				if best == -1 || min > counts[k] {
+					best = k
+					min = counts[k]
 				}
 			}
+			if config.Shards[i] != 0 && counts[config.Shards[i]]-counts[best] <= 1 {
+				continue
+			}
+			counts[config.Shards[i]]--
+			counts[best]++
+			config.Shards[i] = best
 		}
 	}
 
@@ -138,7 +128,6 @@ func (sm *ShardMaster) Wait(seq int) Op {
 }
 
 func (sm *ShardMaster) Propose(op Op) {
-	// log.Printf("%v", op)
 	seq := sm.lastApply + 1
 	for {
 		sm.px.Start(seq, op)
