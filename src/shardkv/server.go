@@ -129,6 +129,29 @@ func (kv *ShardKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 // Ask the shardmaster if there's a new configuration;
 // if so, re-configure.
 //
+
+func (kv *ShardKV) Send(k string, v string, config shardmaster.Config) {
+	for {
+		shard := key2shard(k)
+
+		gid := config.Shards[shard]
+
+		servers, ok := config.Groups[gid]
+		if ok {
+			for _, srv := range servers {
+				//log.Printf("send %v from %v to %v", k, kv.config.Shards[i], newConfig.Shards[i])
+				args := &PutAppendArgs{Key: k, Value: v, Op: "Put"}
+				reply := PutAppendReply{}
+				ok := call(srv, "ShardKV.PutAppend", args, &reply)
+				if ok && reply.Err == OK {
+					return
+				}
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
 func (kv *ShardKV) tick() {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
@@ -138,15 +161,8 @@ func (kv *ShardKV) tick() {
 			for k, v := range kv.database {
 				//log.Printf("send %v from %v to %v", k, kv.config.Shards[i], newConfig.Shards[i])
 				if key2shard(k) == i {
-					log.Printf("send %v from %v to %v", k, kv.config.Shards[i], newConfig.Shards[i])
-					for _, srv := range kv.config.Groups[newConfig.Shards[i]] {
-						args := &PutAppendArgs{Key: k, Value: v, Op: "Put"}
-						reply := PutAppendReply{}
-						ok := call(srv, "ShardKV.PutAppend", args, &reply)
-						if ok && reply.Err == OK {
-							break
-						}
-					}
+					kv.Send(k, v, newConfig)
+					delete(kv.database, k)
 				}
 			}
 		}
