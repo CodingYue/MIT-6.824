@@ -25,7 +25,7 @@ func nrand() int64 {
 func MakeClerk(shardmasters []string) *Clerk {
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(shardmasters)
-	// You'll have to modify MakeClerk.
+	ck.config = ck.sm.Query(-1)
 	return ck
 }
 
@@ -92,7 +92,6 @@ func (ck *Clerk) Get(key string) string {
 		shard := key2shard(key)
 
 		gid := ck.config.Shards[shard]
-
 		servers, ok := ck.config.Groups[gid]
 
 		if ok {

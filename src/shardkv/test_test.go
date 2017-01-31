@@ -1,15 +1,18 @@
 package shardkv
 
-import "testing"
-import "shardmaster"
-import "runtime"
-import "strconv"
-import "os"
-import "time"
-import "fmt"
-import "sync"
-import "sync/atomic"
-import "math/rand"
+import (
+	"fmt"
+	"log"
+	"math/rand"
+	"os"
+	"runtime"
+	"shardmaster"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
 
 // information about the servers of one replica group.
 type tGroup struct {
@@ -132,7 +135,7 @@ func TestBasic(t *testing.T) {
 	ck.Put("a", "x")
 	ck.Append("a", "b")
 	if ck.Get("a") != "xb" {
-		t.Fatalf("Get got wrong value")
+		t.Fatalf("Get got wrong value %v", ck.Get("a"))
 	}
 
 	keys := make([]string, 10)
@@ -198,27 +201,29 @@ func TestMove(t *testing.T) {
 	// check that keys are still there.
 	for i := 0; i < shardmaster.NShards; i++ {
 		if ck.Get(string('0'+i)) != string('0'+i) {
-			t.Fatalf("missing key/value")
+			t.Fatalf("missing key/value %v", i)
 		}
 	}
 
 	// remove sockets from group 0.
 	for _, port := range tc.groups[0].ports {
 		os.Remove(port)
+		log.Printf("Remove port %v", port)
 	}
-
 	count := int32(0)
 	var mu sync.Mutex
 	for i := 0; i < shardmaster.NShards; i++ {
 		go func(me int) {
 			myck := tc.clerk()
 			v := myck.Get(string('0' + me))
+			config := myck.sm.Query(-1)
 			if v == string('0'+me) {
 				mu.Lock()
 				atomic.AddInt32(&count, 1)
 				mu.Unlock()
 			} else {
-				t.Fatalf("Get(%v) yielded %v\n", me, v)
+				log.Print(config.Groups[config.Shards[me]])
+				t.Fatalf("Get(%v) yielded %v, group id %v\n", me, v, config.Shards[me])
 			}
 		}(i)
 	}
