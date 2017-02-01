@@ -1,18 +1,22 @@
 package shardkv
 
-import "shardmaster"
-import "net/rpc"
-import "time"
-import "sync"
-import "fmt"
-import "crypto/rand"
-import "math/big"
+import (
+	"crypto/rand"
+	"fmt"
+	"log"
+	"math/big"
+	"net/rpc"
+	"shardmaster"
+	"sync"
+	"time"
+)
 
 type Clerk struct {
-	mu     sync.Mutex // one RPC at a time
-	sm     *shardmaster.Clerk
-	config shardmaster.Config
-	// You'll have to modify Clerk.
+	mu       sync.Mutex // one RPC at a time
+	sm       *shardmaster.Clerk
+	config   shardmaster.Config
+	clientID int64
+	seq      int
 }
 
 func nrand() int64 {
@@ -26,6 +30,9 @@ func MakeClerk(shardmasters []string) *Clerk {
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(shardmasters)
 	ck.config = ck.sm.Query(-1)
+	ck.clientID = nrand()
+	log.Printf("id = %d", ck.clientID)
+	ck.seq = 0
 	return ck
 }
 
@@ -86,8 +93,7 @@ func (ck *Clerk) Get(key string) string {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 
-	// You'll have to modify Get().
-
+	ck.seq++
 	for {
 		shard := key2shard(key)
 
@@ -99,6 +105,9 @@ func (ck *Clerk) Get(key string) string {
 			for _, srv := range servers {
 				args := &GetArgs{}
 				args.Key = key
+				args.ID = ck.clientID
+				args.Seq = ck.seq
+				args.ConfigNum = ck.config.Num
 				var reply GetReply
 				ok := call(srv, "ShardKV.Get", args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
@@ -122,8 +131,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 
-	// You'll have to modify PutAppend().
-
+	ck.seq++
 	for {
 		shard := key2shard(key)
 
@@ -135,9 +143,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			// try each server in the shard's replication group.
 			for _, srv := range servers {
 				args := &PutAppendArgs{}
-				args.Key = key
-				args.Value = value
+				args.Key = []string{key}
+				args.Value = []string{value}
+				args.ID = ck.clientID
+				args.Seq = ck.seq
 				args.Op = op
+				args.ConfigNum = ck.config.Num
 				var reply PutAppendReply
 				ok := call(srv, "ShardKV.PutAppend", args, &reply)
 				if ok && reply.Err == OK {
