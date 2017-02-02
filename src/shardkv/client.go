@@ -3,7 +3,6 @@ package shardkv
 import (
 	"crypto/rand"
 	"fmt"
-	"log"
 	"math/big"
 	"net/rpc"
 	"shardmaster"
@@ -31,7 +30,6 @@ func MakeClerk(shardmasters []string) *Clerk {
 	ck.sm = shardmaster.MakeClerk(shardmasters)
 	ck.config = ck.sm.Query(-1)
 	ck.clientID = nrand()
-	log.Printf("id = %d", ck.clientID)
 	ck.seq = 0
 	return ck
 }
@@ -108,13 +106,14 @@ func (ck *Clerk) Get(key string) string {
 				args.ID = ck.clientID
 				args.Seq = ck.seq
 				args.ConfigNum = ck.config.Num
+				args.Shard = shard
 				var reply GetReply
 				ok := call(srv, "ShardKV.Get", args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
-					break
+					continue
 				}
 			}
 		}
@@ -143,11 +142,12 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 			// try each server in the shard's replication group.
 			for _, srv := range servers {
 				args := &PutAppendArgs{}
-				args.Key = []string{key}
-				args.Value = []string{value}
+				args.Key = key
+				args.Value = value
 				args.ID = ck.clientID
 				args.Seq = ck.seq
 				args.Op = op
+				args.Shard = shard
 				args.ConfigNum = ck.config.Num
 				var reply PutAppendReply
 				ok := call(srv, "ShardKV.PutAppend", args, &reply)
@@ -155,7 +155,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 					return
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
-					break
+					continue
 				}
 			}
 		}

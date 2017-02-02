@@ -18,12 +18,13 @@ const (
 type Err string
 
 type PutAppendArgs struct {
-	Key       []string
-	Value     []string
+	Key       string
+	Value     string
 	Op        string // "Put" or "Append"
 	ID        int64
 	Seq       int
 	ConfigNum int
+	Shard     int
 }
 
 type PutAppendReply struct {
@@ -35,9 +36,28 @@ type GetArgs struct {
 	ID        int64
 	Seq       int
 	ConfigNum int
+	Shard     int
 }
 
 type GetReply struct {
 	Err   Err
 	Value string
+}
+
+type ShardState struct {
+	maxClientSeq map[int64]int
+	database     map[string]string
+}
+
+type UpdateArgs struct {
+	Database     map[string]string
+	MaxClientSeq map[int64]int
+	Shard        int
+	ConfigNum    int
+	Seq          int
+	ID           int64
+}
+
+type UpdateReply struct {
+	Err string
 }
