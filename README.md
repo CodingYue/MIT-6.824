@@ -1,6 +1,12 @@
 # MIT-6.824
 
-MIT distributed system
+MIT distributed system sprint 2015
+
+[Lab1](https://github.com/CodingYue/MIT-6.824#lab1--mapreduce)
+
+[Lab2](https://github.com/CodingYue/MIT-6.824#lab2--primarybackup-keyvalue-service)
+
+[Lab3](https://github.com/CodingYue/MIT-6.824#lab-3--paxos)
 
 ## Lab1 : MapReduce
 
@@ -156,7 +162,7 @@ Once decided, check if decided value equals to the value given by application. I
 otherwise continue increasing `seq`.
 
 Multiple the same operations sent by client, or due to server unreliable, how to find out two operations identical (not append twice)?
- 
+
 Each client maintains a unique client ID and client Seq. 
 Before client sends a request to servers, it increase its client Seq.
 
