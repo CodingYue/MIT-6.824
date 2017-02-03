@@ -2,55 +2,42 @@
 
 MIT distributed system sprint 2015
 
-[Lab1](https://github.com/CodingYue/MIT-6.824#lab1--mapreduce)
-
-[Lab2](https://github.com/CodingYue/MIT-6.824#lab2--primarybackup-keyvalue-service)
-
+[Lab1](https://github.com/CodingYue/MIT-6.824#lab1--mapreduce)<br>
+[Lab2](https://github.com/CodingYue/MIT-6.824#lab2--primarybackup-keyvalue-service)<br>
 [Lab3](https://github.com/CodingYue/MIT-6.824#lab-3--paxos)
 
 ## Lab1 : MapReduce
 
 ### Part A
 
-Map function maps string, and split the string. 
-
-For each word in the string, generate KeyValue{word, "1"}.
-
-Reduce function's input are key string and KeyValue List. This key corresponds to Map Function gernerated KEY.
-
-Sum the KeyValue's Value and return answer.
+Map function maps string, and split the string. <br>
+For each word in the string, generate KeyValue{word, "1"}.<br>
+Reduce function's input are key string and KeyValue List. This key corresponds to Map Function gernerated KEY.<br>
+Sum the KeyValue's Value and return answer.<br>
 
 ### Part B & Part C
 
-First of all, split data sets, and store them to nMap files.
-
-Initialize master and workers. When initializing workers, each worker will register itself to master.
-
-Use go channel to maintain available workers. 
-
-Once master get registeration notice from workers, it will continously add it to available worker channel.
-
-Worker possibly crash or cannot connects to master, so when finish jobs or fail to send RPC request, master must re-add it to available worker channel.
-
+First of all, split data sets, and store them to nMap files.<br>
+Initialize master and workers. When initializing workers, each worker will register itself to master.<br>
+Use go channel to maintain available workers. <br>
+Once master get registeration notice from workers, it will continously add it to available worker channel.<br>
+Worker possibly crash or cannot connects to master, so when finish jobs or fail to send RPC request, master must re-add it to available worker channel.<br>
 Map operations must be predeceds Reduce operations. 
 
 ## Lab2 : Primary/Backup Key/Value Service
 
-A naive replication system - Primary/Backup
-
-ViewServer maintains a view that shows which server is Primary & Backup.
-
+A naive replication system - Primary/Backup<br>
+ViewServer maintains a view that shows which server is Primary & Backup.<br>
 When Primary finds that Backup exists, Primary must sync its data to Backup.
 
 ### Part A
 
 Viewservice directory. 
 
-client.go in this part describes Primary or Backup server.
+client.go in this part describes Primary or Backup server.<br>
 Each client has its view sent by ViewServer. 
 
-Client use heart beat method tell ViewServer that it it alive(PING ViewServer every PingInterval)
-
+Client use heart beat method tell ViewServer that it it alive(PING ViewServer every PingInterval)<br>
 server.go in this part describes ViewServer.
 
 It will call tick() evrey PingInterval. In tick() it will determines whether backcup and primary are dead.
@@ -64,7 +51,7 @@ Maintains K-V model.
 Client sends request(Get, Append, Put) to server. Server try to send operations to Primary.
 If fail, server will retrieve view from ViewServer.
 
-And Primary will also try to send operations to backup if backup exists.
+And Primary will also try to send operations to backup if backup exists.<br>
 Primary will return SUCCESS FLAG if and only if backup return SUCCESS FLAG.
 
 
@@ -99,19 +86,13 @@ Interfaces:
     px.Min() int // instances before this have been forgotten
 
 `px.Start(seq int, v interface{})` means for specificated `seq` number given by client, paxos will propose a value `v`.
-After call `px.Start()`, all paxos servers will have eventually the same value for specificated `seq` number.
-
-`px.Status()` return whether `seq` is decided, pending or forgotten.
-
-`px.Max()` return maximum nubmer `seq` recieved by `px.Start()`
-
-In order to shrink logs, we must implement two interfaces `px.Min(), px.Done()`. 
-
-`px.Done(seq int)` tells server that application doesn't need `seq` result anymore. (eg. kv applicationa has applied log with `seq` to database.)
-
-`px.Min()` query the minimum number of all paxos servers' `seq` recieved by `px.Done()`
-
-paxos servers can delete logs which's `seq` number is less than `px.Min()`.
+After call `px.Start()`, all paxos servers will have eventually the same value for specificated `seq` number.<br>
+`px.Status()` return whether `seq` is decided, pending or forgotten.<br>
+`px.Max()` return maximum nubmer `seq` recieved by `px.Start()`<br>
+In order to shrink logs, we must implement two interfaces `px.Min(), px.Done()`. <br>
+`px.Done(seq int)` tells server that application doesn't need `seq` result anymore. (eg. kv applicationa has applied log with `seq` to database.)<br>
+`px.Min()` query the minimum number of all paxos servers' `seq` recieved by `px.Done()`<br>
+paxos servers can delete logs which's `seq` number is less than `px.Min()`.<br>
 
 #### Details
 
@@ -147,12 +128,9 @@ pseudo-code
     else
         reply accept_reject
 
-How make sure proposal ID unique?
-
-Each server has its number `me`. Each server's proposalID = n * (number of servers) + me
-
-I maintain vector `doneMax`, indicating `Done()` value recieved by each server.
-
+How make sure proposal ID unique?<br>
+Each server has its number `me`. Each server's proposalID = n * (number of servers) + me<br>
+I maintain vector `doneMax`, indicating `Done()` value recieved by each server.<br>
 I piggyback `Done()` value when send decided message to other servers.
 
 ### Part B: Paxos-based Key/Value Server
@@ -169,4 +147,71 @@ Before client sends a request to servers, it increase its client Seq.
 If we call `Done()` try to forget some operations, how can we choose correct `seq`? (Under the circumstance, some `seqs` are forgotten,
  which means we cannot compare two values.) Solution is that, each server maintains a `maxClientSeq map[int64]int`.
 When a request's `maxClientSeq[ClientID] <= ClientSeq`, the request has been processed, should be passed out.
+
+## Lab4: Sharded Key/Value Service
+
+More practical example than lab3 - Introduction of shard.
+
+### Part A: The Shard Master
+
+Shard Master maintains that each shard is assigned to who groups.<br>
+Shard Master should be fault tolerance.<br>
+
+Multiple replicas method achieves fault tolerance while paxos protocol holds consistency.<br>
+Interfaces `Join(), Leave(), Move(), Query()`.<br>
+
+The algorithm rebalance is that, first assign those shard which assigned group leaves to zero(invalid group).<br>
+For each shard if it it assigned to invalid or assigning group was assigend two many times(more than number of shard  / number of group),<br>
+then it should be reassigned to the group which has the minimum assigning times (one constraint is that difference should be more than 1).<br>
+
+### Part B: Sharded Key/Value Server
+
+Very tough. Many unexpected situations occur in last test case.
+
+#### State Machine Design
+
+    type ShardState struct {
+        maxClientSeq map[int64]int
+        database     map[string]string
+    }
+
+    // Server state machine
+	lastApply  int
+	shardState map[int]*ShardState
+	isRecieved map[int]bool
+
+I use map structure - shardState, to maintain each shard state, in other words, I group database and maxClientSeq by
+shard number. <br>
+This was designed for the specificated situation :
+
+Client A send `{APPEND x, y, ID:A, Seq:1}` to server, operation applied but client doesn't get response(unreliable). <br>
+So Client A will continously send request. But meanwhile, server's tick() function holds the mutex lock.<br>
+Server SA update its config, and move all (k, v) pairs to new assigning group SB without `maxClientSeq` infomations.<br>
+Server SA handles client A request, and response to client A with ErrWrongGroup.<br>
+Client A send request to SB, because SB hasn't `maxClientSeq` infomations, append was called twice.
+
+#### Update Config Info
+
+Server calls tick() every 250 ms, and attempting to update its config.<br>
+Server will ask shardmaster server: what is next config? (`Query(config.Num + 1)`)<br>
+If two configs are not identical, server try to update its config<br>
+Under the circumstances, Server X has three types: new shard assign to group which X belongs to, shard not longer assigned to that group and otherwise.<br>
+Shardmaster modification on config makes sure that a group can only be one of three types.<br>
+
+##### new shard assign to group which X belongs to
+
+Server X cannot update its config until it recieved all new shards' infomation from other group.<br>
+So `isRecieved map[int]bool` records whether shard has been recieved.<br>
+If not recieved, then exit tick().<br>
+Just because `isRecieved` will only be updated in `Apply()` function, before whole process, server X must get newest State Machine (propose a new `Get() Opeartion`)
+
+##### shard not longer assigned to that group
+
+Server sends its shard infomation to other groups. Also, need to update its state machine, propose a new `Get()`.
+
+#### Other Details.
+
+If duplicated request was sending to server, server must response will SUCCESS message to client.<br>
+Because, an operation possibly successfully was applied but server didn't response with SUCCESS message (unreliable). Under this circumstance, 
+server meets the same operation should response SUCCESS message otherwise client cannot move on.
 
