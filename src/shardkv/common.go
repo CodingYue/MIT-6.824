@@ -44,11 +44,6 @@ type GetReply struct {
 	Value string
 }
 
-type ShardState struct {
-	maxClientSeq map[int64]int
-	database     map[string]string
-}
-
 type UpdateArgs struct {
 	Database     map[string]string
 	MaxClientSeq map[int64]int

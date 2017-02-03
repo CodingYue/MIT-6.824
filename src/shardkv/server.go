@@ -24,6 +24,11 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+type ShardState struct {
+	maxClientSeq map[int64]int
+	database     map[string]string
+}
+
 type Op struct {
 	Operation string
 	Value     interface{}
@@ -41,11 +46,9 @@ type ShardKV struct {
 	gid    int64 // my replica group ID
 	config shardmaster.Config
 
-	lastApply int
-
+	lastApply  int
 	shardState map[int]*ShardState
-
-	recieved map[int]bool
+	isRecieved map[int]bool
 }
 
 func MakeShardState() *ShardState {
@@ -95,7 +98,7 @@ func (kv *ShardKV) Apply(op Op) {
 		args := op.Value.(UpdateArgs)
 		stateMachine := kv.shardState[args.Shard]
 
-		kv.recieved[args.Shard] = true
+		kv.isRecieved[args.Shard] = true
 		log.Printf("Update Recieved, config num %v, shard %d, gid %d, me %d",
 			kv.config.Num, args.Shard, kv.gid, kv.me)
 		stateMachine.database = args.Database
@@ -269,7 +272,7 @@ func (kv *ShardKV) tick() {
 			allRecieved := true
 			for shard := 0; shard < shardmaster.NShards; shard++ {
 				if kv.config.Shards[shard] != 0 && kv.config.Shards[shard] != kv.gid && newConfig.Shards[shard] == kv.gid {
-					if !kv.recieved[shard] {
+					if !kv.isRecieved[shard] {
 						allRecieved = false
 						log.Printf("gid %v, me %v, shard %v not recieved, Config %v", kv.gid, kv.me, shard, kv.config.Num)
 						break
@@ -288,7 +291,7 @@ func (kv *ShardKV) tick() {
 			}
 		}
 		kv.config = newConfig
-		kv.recieved = make(map[int]bool)
+		kv.isRecieved = make(map[int]bool)
 	}
 }
 
