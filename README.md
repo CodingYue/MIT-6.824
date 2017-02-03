@@ -211,7 +211,7 @@ Server sends its shard infomation to other groups. Also, need to update its stat
 
 #### Other Details.
 
-If duplicated request was sending to server, server must response will SUCCESS message to client.<br>
-Because, an operation possibly successfully was applied but server didn't response with SUCCESS message (unreliable). Under this circumstance, 
+If duplicated request was sending to server, server must response SUCCESS message to client.<br>
+Because, an operation was successfully applied but server didn't response with SUCCESS message (unreliable). Under this circumstance, 
 server meets the same operation should response SUCCESS message otherwise client cannot move on.
 
