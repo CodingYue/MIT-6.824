@@ -45,8 +45,7 @@ type ShardKV struct {
 
 	shardState map[int]*ShardState
 
-	recieved         map[int]bool
-	isSentUpdateInfo bool
+	recieved map[int]bool
 }
 
 func MakeShardState() *ShardState {
@@ -257,15 +256,13 @@ func (kv *ShardKV) tick() {
 		}
 		op := Op{Operation: "Get"}
 
-		if isProducer && !kv.isSentUpdateInfo {
+		if isProducer {
 			kv.Propose(op)
 			for shard := 0; shard < shardmaster.NShards; shard++ {
 				if kv.config.Shards[shard] == kv.gid && newConfig.Shards[shard] != kv.gid {
 					kv.Send(shard, newConfig)
 				}
 			}
-
-			kv.isSentUpdateInfo = true
 		}
 		if isConsumer {
 			kv.Propose(op)
@@ -292,7 +289,6 @@ func (kv *ShardKV) tick() {
 		}
 		kv.config = newConfig
 		kv.recieved = make(map[int]bool)
-		kv.isSentUpdateInfo = false
 	}
 }
 
