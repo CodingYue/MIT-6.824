@@ -2,9 +2,18 @@
 
 MIT distributed system sprint 2015
 
-[Lab1](https://github.com/CodingYue/MIT-6.824#lab1--mapreduce)<br>
-[Lab2](https://github.com/CodingYue/MIT-6.824#lab2--primarybackup-keyvalue-service)<br>
-[Lab3](https://github.com/CodingYue/MIT-6.824#lab-3--paxos)
+ * [Lab1 : MapReduce](#lab1--mapreduce)
+	 * [Part A](#part-a)
+	 * [Part B & Part C](#part-b--part-c)
+ * [Lab2 : Primary/Backup Key/Value Service](#lab2--primarybackup-keyvalue-service)
+	 * [Part A](#part-a-1)
+	 * [Part B](#part-b)
+ * [Lab 3 : Paxos](#lab-3--paxos)
+	 * [Part A](#part-a-2)
+	 * [Part B: Paxos-based Key/Value Server](#part-b-paxos-based-keyvalue-server)
+ * [Lab4: Sharded Key/Value Service](#lab4-sharded-keyvalue-service)
+	 * [Part A: The Shard Master](#part-a-the-shard-master)
+	 * [Part B: Sharded Key/Value Server](#part-b-sharded-keyvalue-server)
 
 ## Lab1 : MapReduce
 
