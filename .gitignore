@@ -1,3 +1,4 @@
 api.key
 *-handin.tar.gz
 *.a
+.vscode/
