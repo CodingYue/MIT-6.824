@@ -2,3 +2,5 @@ api.key
 *-handin.tar.gz
 *.a
 .vscode/
+bin/
+src/github.com/
