@@ -138,7 +138,7 @@ func (kv *ShardKV) Propose(op Op) {
 			break
 		}
 	}
-	//kv.px.Done(kv.lastApply)
+	kv.px.Done(kv.lastApply)
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) error {
