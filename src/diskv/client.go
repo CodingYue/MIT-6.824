@@ -9,10 +9,11 @@ import "crypto/rand"
 import "math/big"
 
 type Clerk struct {
-	mu     sync.Mutex // one RPC at a time
-	sm     *shardmaster.Clerk
-	config shardmaster.Config
-	// You'll have to modify Clerk.
+	mu       sync.Mutex // one RPC at a time
+	sm       *shardmaster.Clerk
+	config   shardmaster.Config
+	clientID int64
+	seq      int
 }
 
 func nrand() int64 {
@@ -25,7 +26,9 @@ func nrand() int64 {
 func MakeClerk(shardmasters []string) *Clerk {
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(shardmasters)
-	// You'll have to modify MakeClerk.
+	ck.clientID = nrand()
+	ck.config = ck.sm.Query(-1)
+	ck.seq = 0
 	return ck
 }
 
@@ -86,13 +89,11 @@ func (ck *Clerk) Get(key string) string {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 
-	// You'll have to modify Get().
-
+	ck.seq++
 	for {
 		shard := key2shard(key)
 
 		gid := ck.config.Shards[shard]
-
 		servers, ok := ck.config.Groups[gid]
 
 		if ok {
@@ -100,13 +101,17 @@ func (ck *Clerk) Get(key string) string {
 			for _, srv := range servers {
 				args := &GetArgs{}
 				args.Key = key
+				args.ID = ck.clientID
+				args.Seq = ck.seq
+				args.ConfigNum = ck.config.Num
+				args.Shard = shard
 				var reply GetReply
 				ok := call(srv, "DisKV.Get", args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
 					return reply.Value
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
-					break
+					continue
 				}
 			}
 		}
@@ -123,8 +128,7 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 	ck.mu.Lock()
 	defer ck.mu.Unlock()
 
-	// You'll have to modify PutAppend().
-
+	ck.seq++
 	for {
 		shard := key2shard(key)
 
@@ -138,14 +142,18 @@ func (ck *Clerk) PutAppend(key string, value string, op string) {
 				args := &PutAppendArgs{}
 				args.Key = key
 				args.Value = value
+				args.ID = ck.clientID
+				args.Seq = ck.seq
 				args.Op = op
+				args.Shard = shard
+				args.ConfigNum = ck.config.Num
 				var reply PutAppendReply
 				ok := call(srv, "DisKV.PutAppend", args, &reply)
 				if ok && reply.Err == OK {
 					return
 				}
 				if ok && (reply.Err == ErrWrongGroup) {
-					break
+					continue
 				}
 			}
 		}
