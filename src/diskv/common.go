@@ -50,7 +50,7 @@ type GetReply struct {
 
 type UpdateArgs struct {
 	Database     map[string]string
-	MaxClientSeq map[string]string
+	MaxClientSeq map[string]int
 	Shard        int
 	ConfigNum    int
 	Seq          int
@@ -66,7 +66,7 @@ type RecoverArgs struct {
 
 type RecoverReply struct {
 	Database     map[int]map[string]string
-	MaxClientSeq map[int]map[string]string
+	MaxClientSeq map[int]map[string]int
 	Config       shardmaster.Config
 	LastApply    int
 	IsReceived   map[int]bool
