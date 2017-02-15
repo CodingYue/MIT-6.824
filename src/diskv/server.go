@@ -30,15 +30,12 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 const (
-	KeyPrefix      = "/key-"
-	ClientPrefix   = "/client-"
-	ReceivedPrefix = "/received-"
+	KeyPrefix       = "/key-"
+	ClientPrefix    = "/client-"
+	ReceivedPrefix  = "/received-"
+	LastApplyPrefix = "/last_apply"
+	ConfigNumPrefix = "/config_num"
 )
-
-type ShardState struct {
-	maxClientSeq map[string]string
-	database     map[string]string
-}
 
 type Op struct {
 	Operation string
@@ -70,7 +67,12 @@ type DisKV struct {
 //
 
 func (kv *DisKV) shardDir(shard int) string {
-	d := kv.dir + "/shard-" + strconv.Itoa(shard) + "/"
+	var d string
+	if shard != -1 {
+		d = kv.dir + "/shard-" + strconv.Itoa(shard) + "/"
+	} else {
+		d = kv.dir + "/"
+	}
 	// create directory if needed.
 	_, err := os.Stat(d)
 	if err != nil {
@@ -118,9 +120,10 @@ func (kv *DisKV) filePut(shard int, prefix string, key string, content string) e
 }
 
 // return content of every key file in a given shard.
-func (kv *DisKV) fileReadShard(shard int) *ShardState {
-	shardState := &ShardState{
-		database: map[string]string{}, maxClientSeq: map[string]string{}}
+func (kv *DisKV) fileReadShard(shard int) (
+	database map[string]string, maxClientSeq map[string]string) {
+	database = map[string]string{}
+	maxClientSeq = map[string]string{}
 	d := kv.shardDir(shard)
 	files, err := ioutil.ReadDir(d)
 	if err != nil {
@@ -137,7 +140,7 @@ func (kv *DisKV) fileReadShard(shard int) *ShardState {
 			if err != nil {
 				log.Fatalf("fileReadShard fileGet failed for %v: %v", key, err)
 			}
-			shardState.database[key] = content
+			database[key] = content
 		} else if n1[0:7] == "client-" {
 			key, err := kv.decodeKey(n1[7:])
 			if err != nil {
@@ -147,20 +150,21 @@ func (kv *DisKV) fileReadShard(shard int) *ShardState {
 			if err != nil {
 				log.Fatalf("fileReadShard fileGet Client failed for %v: %v", key, err)
 			}
-			shardState.maxClientSeq[key] = content
+			maxClientSeq[key] = content
 		}
 	}
-	return shardState
+	return database, maxClientSeq
 }
 
 // replace an entire shard directory.
-func (kv *DisKV) fileReplaceShard(shard int, shardState *ShardState) {
+func (kv *DisKV) fileReplaceShard(shard int, database map[string]string,
+	maxClientSeq map[string]string) {
 	d := kv.shardDir(shard)
 	os.RemoveAll(d) // remove all existing files from shard.
-	for k, v := range shardState.database {
+	for k, v := range database {
 		kv.filePut(shard, KeyPrefix, k, v)
 	}
-	for k, v := range shardState.maxClientSeq {
+	for k, v := range maxClientSeq {
 		kv.filePut(shard, ClientPrefix, k, v)
 	}
 }
@@ -189,12 +193,11 @@ func (kv *DisKV) Apply(op Op) {
 
 	switch op.Operation {
 	case "Get":
-		if op.Value != nil {
-			args := op.Value.(GetArgs)
-			if kv.CommitSeq(args.Shard, args.ID, args.Seq) != nil {
-				return
-			}
+		args := op.Value.(GetArgs)
+		if kv.CommitSeq(args.Shard, args.ID, args.Seq) != nil {
+			return
 		}
+
 	case "Put":
 		args := op.Value.(PutAppendArgs)
 		kv.filePut(args.Shard, KeyPrefix, args.Key, args.Value)
@@ -217,8 +220,7 @@ func (kv *DisKV) Apply(op Op) {
 
 		log.Printf("Update Recieved, config num %v, shard %d, gid %d, me %d",
 			kv.config.Num, args.Shard, kv.gid, kv.me)
-		kv.fileReplaceShard(args.Shard,
-			&ShardState{database: args.Database, maxClientSeq: args.MaxClientSeq})
+		kv.fileReplaceShard(args.Shard, args.Database, args.MaxClientSeq)
 		kv.filePut(args.Shard, ReceivedPrefix, strconv.Itoa(args.ConfigNum), "true")
 		if kv.CommitSeq(args.Shard, args.ID, args.Seq) != nil {
 			return
@@ -229,6 +231,7 @@ func (kv *DisKV) Apply(op Op) {
 		panic("Wrong operation type")
 	}
 	kv.lastApply++
+	kv.filePut(-1, LastApplyPrefix, "", strconv.Itoa(kv.lastApply))
 }
 
 func (kv *DisKV) Wait(seq int) Op {
@@ -312,7 +315,6 @@ func (kv *DisKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 		return nil
 	}
 	op := Op{Operation: args.Op, Value: *args}
-	log.Printf("Put Append %v", op)
 	kv.Propose(op)
 	reply.Err = OK
 	return nil
@@ -338,18 +340,35 @@ func (kv *DisKV) Update(args *UpdateArgs, reply *UpdateReply) error {
 	return nil
 }
 
+func (kv *DisKV) Recover(args *RecoverArgs, reply *RecoverReply) error {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	reply.Database = map[int]map[string]string{}
+	reply.MaxClientSeq = map[int]map[string]string{}
+	reply.IsReceived = map[int]bool{}
+	reply.Config = kv.config
+	reply.LastApply = kv.lastApply
+	for shard := 0; shard < shardmaster.NShards; shard++ {
+		if kv.config.Shards[shard] == kv.gid {
+			reply.Database[shard], reply.MaxClientSeq[shard] =
+				kv.fileReadShard(shard)
+			reply.IsReceived[shard] = kv.isReceived(shard, kv.config.Num)
+		}
+	}
+	return nil
+}
+
 func (kv *DisKV) Send(shard int, newConfig shardmaster.Config) {
 
-	shardState := kv.fileReadShard(shard)
-	log.Printf("%v %v", shardState.database, shardState.maxClientSeq)
+	database, maxClientSeq := kv.fileReadShard(shard)
 
 	args := &UpdateArgs{
 		Shard:        shard,
 		ID:           strconv.FormatInt(kv.gid, 10),
 		Seq:          kv.config.Num,
 		ConfigNum:    kv.config.Num,
-		Database:     shardState.database,
-		MaxClientSeq: shardState.maxClientSeq}
+		Database:     database,
+		MaxClientSeq: maxClientSeq}
 	reply := UpdateReply{}
 
 	gid := newConfig.Shards[shard]
@@ -358,14 +377,17 @@ func (kv *DisKV) Send(shard int, newConfig shardmaster.Config) {
 
 		if ok {
 			for _, srv := range servers {
-				log.Printf("Send shard %d to gid %d, srv %v, args %v, me %d", shard, gid, srv, args, kv.me)
+				log.Printf("Send shard %d to gid %d, srv %v, args %v, me %d",
+					shard, gid, srv, args, kv.me)
 				ok := call(srv, "DisKV.Update", args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-					log.Printf("Success: shard %d to gid %d, srv %v, args %v, me %d", shard, gid, srv, args, kv.me)
+					log.Printf("Success: shard %d to gid %d, srv %v, args %v, me %d",
+						shard, gid, srv, args, kv.me)
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
-					log.Printf("Err group: shard %d to gid %d, srv %v, args %v", shard, gid, srv, args)
+					log.Printf("Err group: shard %d to gid %d, srv %v, args %v",
+						shard, gid, srv, args)
 					continue
 				}
 			}
@@ -423,8 +445,9 @@ func (kv *DisKV) tick() {
 			}
 		}
 
-		log.Printf("gid %d, me %d Config promote %v -> %v", kv.gid, kv.me, kv.config.Num, newConfig.Num)
 		kv.config = newConfig
+		kv.filePut(-1, ConfigNumPrefix, "", strconv.Itoa(kv.config.Num))
+		log.Printf("gid %d, me %d Config promote %v -> %v", kv.gid, kv.me, kv.config.Num, newConfig.Num)
 	}
 }
 
@@ -469,8 +492,35 @@ func (kv *DisKV) isunreliable() bool {
 //   is started, and true to indicate a re-start
 //   after a crash or after a crash with disk loss.
 //
+func (kv *DisKV) RestoreReplica(servers []string) {
+	log.Printf("Resotre replica")
+	args := &RecoverArgs{}
+	reply := RecoverReply{}
+	for {
+		for idx, srv := range servers {
+			if idx == kv.me {
+				continue
+			}
+			if ok := call(srv, "DisKV.Recover", args, &reply); ok {
+				goto success
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+success:
+	kv.lastApply = reply.LastApply
+	kv.config = reply.Config
+	for shard := 0; shard < shardmaster.NShards; shard++ {
+		if kv.config.Shards[shard] == kv.gid {
+			kv.fileReplaceShard(shard, reply.Database[shard], reply.MaxClientSeq[shard])
+			kv.filePut(shard, ReceivedPrefix, strconv.Itoa(kv.config.Num), "true")
+		}
+	}
+}
+
 func StartServer(gid int64, shardmasters []string,
 	servers []string, me int, dir string, restart bool) *DisKV {
+
 	gob.Register(Op{})
 	gob.Register(PutAppendArgs{})
 	gob.Register(UpdateArgs{})
@@ -481,13 +531,32 @@ func StartServer(gid int64, shardmasters []string,
 	kv.gid = gid
 	kv.sm = shardmaster.MakeClerk(shardmasters)
 	kv.dir = dir
+	kv.lastApply = 0
 	kv.config = shardmaster.Config{Num: 0, Groups: map[int64][]string{}}
+	if restart {
+		log.Printf("Restart Server gid %d, me %d", gid, me)
+		numStr, err := kv.fileGet(-1, LastApplyPrefix, "")
+		if err != nil {
+			kv.RestoreReplica(servers)
+			goto rpc
+		}
+		num, _ := strconv.Atoi(numStr)
+		kv.config = kv.sm.Query(num)
+		applyStr, err := kv.fileGet(-1, LastApplyPrefix, "")
+		if err != nil {
+			kv.RestoreReplica(servers)
+			goto rpc
+		}
+		kv.lastApply, _ = strconv.Atoi(applyStr)
 
+		log.Printf("Restart Server gid %d, me %d, config %v, last apply %v",
+			gid, me, kv.config, kv.lastApply)
+	}
 	// Your initialization code here.
 	// Don't call Join().
 
 	// log.SetOutput(ioutil.Discard)
-
+rpc:
 	gob.Register(Op{})
 
 	rpcs := rpc.NewServer()

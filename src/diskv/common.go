@@ -1,5 +1,9 @@
 package diskv
 
+import (
+	"shardmaster"
+)
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -55,4 +59,15 @@ type UpdateArgs struct {
 
 type UpdateReply struct {
 	Err string
+}
+
+type RecoverArgs struct {
+}
+
+type RecoverReply struct {
+	Database     map[int]map[string]string
+	MaxClientSeq map[int]map[string]string
+	Config       shardmaster.Config
+	LastApply    int
+	IsReceived   map[int]bool
 }
