@@ -29,8 +29,14 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const (
+	KeyPrefix      = "/key-"
+	ClientPrefix   = "/client-"
+	ReceivedPrefix = "/received-"
+)
+
 type ShardState struct {
-	maxClientSeq map[int64]int
+	maxClientSeq map[string]string
 	database     map[string]string
 }
 
@@ -52,10 +58,7 @@ type DisKV struct {
 	gid    int64 // my replica group ID
 	config shardmaster.Config
 
-	lastApply  int
-	shardState map[int]*ShardState
-	isRecieved map[int]bool
-	// Your definitions here.
+	lastApply int
 }
 
 //
@@ -93,8 +96,8 @@ func (kv *DisKV) decodeKey(filename string) (string, error) {
 }
 
 // read the content of a key's file.
-func (kv *DisKV) fileGet(shard int, key string) (string, error) {
-	fullname := kv.shardDir(shard) + "/key-" + kv.encodeKey(key)
+func (kv *DisKV) fileGet(shard int, prefix string, key string) (string, error) {
+	fullname := kv.shardDir(shard) + prefix + kv.encodeKey(key)
 	content, err := ioutil.ReadFile(fullname)
 	return string(content), err
 }
@@ -102,8 +105,8 @@ func (kv *DisKV) fileGet(shard int, key string) (string, error) {
 // replace the content of a key's file.
 // uses rename() to make the replacement atomic with
 // respect to crashes.
-func (kv *DisKV) filePut(shard int, key string, content string) error {
-	fullname := kv.shardDir(shard) + "/key-" + kv.encodeKey(key)
+func (kv *DisKV) filePut(shard int, prefix string, key string, content string) error {
+	fullname := kv.shardDir(shard) + prefix + kv.encodeKey(key)
 	tempname := kv.shardDir(shard) + "/temp-" + kv.encodeKey(key)
 	if err := ioutil.WriteFile(tempname, []byte(content), 0666); err != nil {
 		return err
@@ -115,8 +118,9 @@ func (kv *DisKV) filePut(shard int, key string, content string) error {
 }
 
 // return content of every key file in a given shard.
-func (kv *DisKV) fileReadShard(shard int) map[string]string {
-	m := map[string]string{}
+func (kv *DisKV) fileReadShard(shard int) *ShardState {
+	shardState := &ShardState{
+		database: map[string]string{}, maxClientSeq: map[string]string{}}
 	d := kv.shardDir(shard)
 	files, err := ioutil.ReadDir(d)
 	if err != nil {
@@ -129,83 +133,100 @@ func (kv *DisKV) fileReadShard(shard int) map[string]string {
 			if err != nil {
 				log.Fatalf("fileReadShard bad file name %v: %v", n1, err)
 			}
-			content, err := kv.fileGet(shard, key)
+			content, err := kv.fileGet(shard, KeyPrefix, key)
 			if err != nil {
 				log.Fatalf("fileReadShard fileGet failed for %v: %v", key, err)
 			}
-			m[key] = content
+			shardState.database[key] = content
+		} else if n1[0:7] == "client-" {
+			key, err := kv.decodeKey(n1[7:])
+			if err != nil {
+				log.Fatalf("fileReadShard bad file name %v: %v", n1, err)
+			}
+			content, err := kv.fileGet(shard, ClientPrefix, key)
+			if err != nil {
+				log.Fatalf("fileReadShard fileGet Client failed for %v: %v", key, err)
+			}
+			shardState.maxClientSeq[key] = content
 		}
 	}
-	return m
+	return shardState
 }
 
 // replace an entire shard directory.
-func (kv *DisKV) fileReplaceShard(shard int, m map[string]string) {
+func (kv *DisKV) fileReplaceShard(shard int, shardState *ShardState) {
 	d := kv.shardDir(shard)
 	os.RemoveAll(d) // remove all existing files from shard.
-	for k, v := range m {
-		kv.filePut(shard, k, v)
+	for k, v := range shardState.database {
+		kv.filePut(shard, KeyPrefix, k, v)
+	}
+	for k, v := range shardState.maxClientSeq {
+		kv.filePut(shard, ClientPrefix, k, v)
 	}
 }
 
-func MakeShardState() *ShardState {
-	shardState := &ShardState{}
-	shardState.database = make(map[string]string)
-	shardState.maxClientSeq = make(map[int64]int)
-	return shardState
+func (kv *DisKV) CommitSeq(shard int, clientID string, argsSeq int) error {
+	seqString, err := kv.fileGet(shard, ClientPrefix, clientID)
+	if err != nil {
+		seqString = "0"
+	}
+	seq, err := strconv.Atoi(seqString)
+	if err != nil {
+		return err
+	}
+	if argsSeq > seq {
+		err := kv.filePut(shard, ClientPrefix, clientID, strconv.Itoa(argsSeq))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (kv *DisKV) Apply(op Op) {
 
 	log.Printf("Apply %v, gid %v, me %v", op, kv.gid, kv.me)
+
 	switch op.Operation {
 	case "Get":
 		if op.Value != nil {
 			args := op.Value.(GetArgs)
-			log.Printf("Get %v, %v", args.Key, kv.shardState[args.Shard].database[args.Key])
-
-			if args.Seq > kv.shardState[args.Shard].maxClientSeq[args.ID] {
-				kv.shardState[args.Shard].maxClientSeq[args.ID] = args.Seq
+			if kv.CommitSeq(args.Shard, args.ID, args.Seq) != nil {
+				return
 			}
 		}
 	case "Put":
 		args := op.Value.(PutAppendArgs)
-		stateMachine := kv.shardState[args.Shard]
-		stateMachine.database[args.Key] = args.Value
-
-		if args.Seq > kv.shardState[args.Shard].maxClientSeq[args.ID] {
-			kv.shardState[args.Shard].maxClientSeq[args.ID] = args.Seq
+		kv.filePut(args.Shard, KeyPrefix, args.Key, args.Value)
+		if kv.CommitSeq(args.Shard, args.ID, args.Seq) != nil {
+			return
 		}
+
 	case "Append":
 		args := op.Value.(PutAppendArgs)
-		stateMachine := kv.shardState[args.Shard]
-
-		value, ok := stateMachine.database[args.Key]
-		if !ok {
+		value, err := kv.fileGet(args.Shard, KeyPrefix, args.Key)
+		if err != nil {
 			value = ""
 		}
-		stateMachine.database[args.Key] = value + args.Value
-
-		log.Printf("After append, %v", kv.shardState[args.Shard].database[args.Key])
-
-		if args.Seq > kv.shardState[args.Shard].maxClientSeq[args.ID] {
-			kv.shardState[args.Shard].maxClientSeq[args.ID] = args.Seq
+		kv.filePut(args.Shard, KeyPrefix, args.Key, value+args.Value)
+		if kv.CommitSeq(args.Shard, args.ID, args.Seq) != nil {
+			return
 		}
 	case "Update":
 		args := op.Value.(UpdateArgs)
-		stateMachine := kv.shardState[args.Shard]
 
-		kv.isRecieved[args.Shard] = true
 		log.Printf("Update Recieved, config num %v, shard %d, gid %d, me %d",
 			kv.config.Num, args.Shard, kv.gid, kv.me)
-		stateMachine.database = args.Database
-		stateMachine.maxClientSeq = args.MaxClientSeq
-
-		if args.Seq > kv.shardState[args.Shard].maxClientSeq[args.ID] {
-			kv.shardState[args.Shard].maxClientSeq[args.ID] = args.Seq
+		kv.fileReplaceShard(args.Shard,
+			&ShardState{database: args.Database, maxClientSeq: args.MaxClientSeq})
+		kv.filePut(args.Shard, ReceivedPrefix, strconv.Itoa(args.ConfigNum), "true")
+		if kv.CommitSeq(args.Shard, args.ID, args.Seq) != nil {
+			return
 		}
-	default:
+	case "Tick":
 		break
+	default:
+		panic("Wrong operation type")
 	}
 	kv.lastApply++
 }
@@ -245,13 +266,12 @@ func (kv *DisKV) Get(args *GetArgs, reply *GetReply) error {
 		reply.Err = ErrWrongGroup
 		return nil
 	}
-	// if args.Seq > kv.shardState[args.Shard].maxClientSeq[args.ID] {
-	op := Op{Operation: "Get", Value: *args}
-	log.Printf("Get haha: %v", *args)
-	kv.Propose(op)
-	// }
-	value, ok := kv.shardState[args.Shard].database[args.Key]
-	if !ok {
+	if args.Seq > kv.getSeq(args.Shard, args.ID) {
+		op := Op{Operation: "Get", Value: *args}
+		kv.Propose(op)
+	}
+	value, err := kv.fileGet(args.Shard, KeyPrefix, args.Key)
+	if err != nil {
 		reply.Err = ErrNoKey
 		reply.Value = "NO KEY"
 	} else {
@@ -259,6 +279,23 @@ func (kv *DisKV) Get(args *GetArgs, reply *GetReply) error {
 		reply.Err = OK
 	}
 	return nil
+}
+
+func (kv *DisKV) getSeq(shard int, clientID string) int {
+	seqString, err := kv.fileGet(shard, ClientPrefix, clientID)
+	if err != nil {
+		return 0
+	}
+	seq, err := strconv.Atoi(seqString)
+	return seq
+}
+
+func (kv *DisKV) isReceived(shard int, configNum int) bool {
+	received, err := kv.fileGet(shard, ReceivedPrefix, strconv.Itoa(configNum))
+	if err != nil {
+		return false
+	}
+	return received == "true"
 }
 
 // RPC handler for client Put and Append requests
@@ -270,11 +307,12 @@ func (kv *DisKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 		reply.Err = ErrWrongGroup
 		return nil
 	}
-	if args.Seq <= kv.shardState[args.Shard].maxClientSeq[args.ID] {
+	if args.Seq <= kv.getSeq(args.Shard, args.ID) {
 		reply.Err = OK
 		return nil
 	}
 	op := Op{Operation: args.Op, Value: *args}
+	log.Printf("Put Append %v", op)
 	kv.Propose(op)
 	reply.Err = OK
 	return nil
@@ -284,9 +322,7 @@ func (kv *DisKV) Update(args *UpdateArgs, reply *UpdateReply) error {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
 
-	//log.Printf("args %v", *args)
-
-	if args.Seq <= kv.shardState[args.Shard].maxClientSeq[args.ID] {
+	if args.Seq <= kv.getSeq(args.Shard, args.ID) {
 		reply.Err = OK
 		return nil
 	}
@@ -294,6 +330,8 @@ func (kv *DisKV) Update(args *UpdateArgs, reply *UpdateReply) error {
 		reply.Err = ErrWrongGroup
 		return nil
 	}
+
+	log.Printf("Update handle %d %d: %v", kv.gid, kv.me, args)
 	op := Op{Operation: "Update", Value: *args}
 	kv.Propose(op)
 	reply.Err = OK
@@ -302,13 +340,16 @@ func (kv *DisKV) Update(args *UpdateArgs, reply *UpdateReply) error {
 
 func (kv *DisKV) Send(shard int, newConfig shardmaster.Config) {
 
+	shardState := kv.fileReadShard(shard)
+	log.Printf("%v %v", shardState.database, shardState.maxClientSeq)
+
 	args := &UpdateArgs{
 		Shard:        shard,
-		ID:           kv.gid,
+		ID:           strconv.FormatInt(kv.gid, 10),
 		Seq:          kv.config.Num,
 		ConfigNum:    kv.config.Num,
-		Database:     kv.shardState[shard].database,
-		MaxClientSeq: kv.shardState[shard].maxClientSeq}
+		Database:     shardState.database,
+		MaxClientSeq: shardState.maxClientSeq}
 	reply := UpdateReply{}
 
 	gid := newConfig.Shards[shard]
@@ -317,10 +358,10 @@ func (kv *DisKV) Send(shard int, newConfig shardmaster.Config) {
 
 		if ok {
 			for _, srv := range servers {
-				log.Printf("Send shard %d to gid %d, srv %v, args %v", shard, gid, srv, args)
+				log.Printf("Send shard %d to gid %d, srv %v, args %v, me %d", shard, gid, srv, args, kv.me)
 				ok := call(srv, "DisKV.Update", args, &reply)
 				if ok && (reply.Err == OK || reply.Err == ErrNoKey) {
-					log.Printf("Success: shard %d to gid %d, srv %v, args %v", shard, gid, srv, args)
+					log.Printf("Success: shard %d to gid %d, srv %v, args %v, me %d", shard, gid, srv, args, kv.me)
 					return
 				}
 				if ok && reply.Err == ErrWrongGroup {
@@ -355,7 +396,7 @@ func (kv *DisKV) tick() {
 				isConsumer = true
 			}
 		}
-		op := Op{Operation: "Get"}
+		op := Op{Operation: "Tick", Value: nrand()}
 
 		if isProducer {
 			kv.Propose(op)
@@ -370,7 +411,7 @@ func (kv *DisKV) tick() {
 			allRecieved := true
 			for shard := 0; shard < shardmaster.NShards; shard++ {
 				if kv.config.Shards[shard] != 0 && kv.config.Shards[shard] != kv.gid && newConfig.Shards[shard] == kv.gid {
-					if !kv.isRecieved[shard] {
+					if !kv.isReceived(shard, kv.config.Num) {
 						allRecieved = false
 						log.Printf("gid %v, me %v, shard %v not recieved, Config %v", kv.gid, kv.me, shard, kv.config.Num)
 						break
@@ -383,13 +424,7 @@ func (kv *DisKV) tick() {
 		}
 
 		log.Printf("gid %d, me %d Config promote %v -> %v", kv.gid, kv.me, kv.config.Num, newConfig.Num)
-		for shard := 0; shard < shardmaster.NShards; shard++ {
-			if kv.config.Shards[shard] == kv.gid && newConfig.Shards[shard] != kv.gid {
-				kv.shardState[shard] = MakeShardState()
-			}
-		}
 		kv.config = newConfig
-		kv.isRecieved = make(map[int]bool)
 	}
 }
 
@@ -447,10 +482,6 @@ func StartServer(gid int64, shardmasters []string,
 	kv.sm = shardmaster.MakeClerk(shardmasters)
 	kv.dir = dir
 	kv.config = shardmaster.Config{Num: 0, Groups: map[int64][]string{}}
-	kv.shardState = make(map[int]*ShardState)
-	for shard := 0; shard < shardmaster.NShards; shard++ {
-		kv.shardState[shard] = MakeShardState()
-	}
 
 	// Your initialization code here.
 	// Don't call Join().

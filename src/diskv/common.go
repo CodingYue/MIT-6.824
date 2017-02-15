@@ -21,7 +21,7 @@ type PutAppendArgs struct {
 	Key       string
 	Value     string
 	Op        string // "Put" or "Append"
-	ID        int64
+	ID        string
 	Seq       int
 	ConfigNum int
 	Shard     int
@@ -33,7 +33,7 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key       string
-	ID        int64
+	ID        string
 	Seq       int
 	ConfigNum int
 	Shard     int
@@ -46,11 +46,11 @@ type GetReply struct {
 
 type UpdateArgs struct {
 	Database     map[string]string
-	MaxClientSeq map[int64]int
+	MaxClientSeq map[string]string
 	Shard        int
 	ConfigNum    int
 	Seq          int
-	ID           int64
+	ID           string
 }
 
 type UpdateReply struct {
