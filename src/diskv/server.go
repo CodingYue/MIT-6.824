@@ -4,6 +4,7 @@ import (
 	"encoding/base32"
 	"encoding/gob"
 	"fmt"
+	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
@@ -95,26 +96,26 @@ func (kv *DisKV) decodeKey(filename string) (string, error) {
 }
 
 // read the content of a key's file.
-// func (kv *DisKV) fileGet(shard int, prefix string, key string) (string, error) {
-// 	fullname := kv.shardDir(shard) + prefix + kv.encodeKey(key)
-// 	content, err := ioutil.ReadFile(fullname)
-// 	return string(content), err
-// }
+func (kv *DisKV) fileGet(shard int, prefix string, key string) (string, error) {
+	fullname := kv.shardDir(shard) + prefix + kv.encodeKey(key)
+	content, err := ioutil.ReadFile(fullname)
+	return string(content), err
+}
 
 // replace the content of a key's file.
 // uses rename() to make the replacement atomic with
 // respect to crashes.
-// func (kv *DisKV) filePut(shard int, prefix string, key string, content string) error {
-// 	fullname := kv.shardDir(shard) + prefix + kv.encodeKey(key)
-// 	tempname := kv.shardDir(shard) + "/temp-" + kv.encodeKey(key)
-// 	if err := ioutil.WriteFile(tempname, []byte(content), 0666); err != nil {
-// 		return err
-// 	}
-// 	if err := os.Rename(tempname, fullname); err != nil {
-// 		return err
-// 	}
-// 	return nil
-// }
+func (kv *DisKV) filePut(shard int, prefix string, key string, content string) error {
+	fullname := kv.shardDir(shard) + prefix + kv.encodeKey(key)
+	tempname := kv.shardDir(shard) + "/temp-" + kv.encodeKey(key)
+	if err := ioutil.WriteFile(tempname, []byte(content), 0666); err != nil {
+		return err
+	}
+	if err := os.Rename(tempname, fullname); err != nil {
+		return err
+	}
+	return nil
+}
 
 // return content of every key file in a given shard.
 // func (kv *DisKV) fileReadShard(shard int) (
@@ -166,61 +167,6 @@ func (kv *DisKV) decodeKey(filename string) (string, error) {
 // 	}
 // }
 
-// func (kv *DisKV) CommitSeq(shard int, clientID string, argsSeq int) error {
-// 	seqString, err := kv.fileGet(shard, ClientPrefix, clientID)
-// 	if err != nil {
-// 		seqString = "0"
-// 	}
-// 	seq, err := strconv.Atoi(seqString)
-// 	if err != nil {
-// 		return err
-// 	}
-// 	if argsSeq > seq {
-// 		err := kv.filePut(shard, ClientPrefix, clientID, strconv.Itoa(argsSeq))
-// 		if err != nil {
-// 			return err
-// 		}
-// 	}
-// 	return nil
-// }
-
-// func (kv *DisKV) Apply(op Op) {
-
-// 	log.Printf("Apply %v, gid %v, me %v", op, kv.gid, kv.me)
-
-// 	switch op.Operation {
-// 	case "Get":
-// 		args := op.Value.(GetArgs)
-// 		kv.state.updateSeq(args.Shard, args.ID, args.Seq)
-
-// 	case "Put":
-// 		args := op.Value.(PutAppendArgs)
-// 		kv.state.putKeyValue(args.Shard, args.Key, args.Value)
-// 		kv.state.updateSeq(args.Shard, args.ID, args.Seq)
-
-// 	case "Append":
-// 		args := op.Value.(PutAppendArgs)
-// 		kv.state.appendKeyValue(args.Shard, args.Key, args.Value)
-// 		kv.state.updateSeq(args.Shard, args.ID, args.Seq)
-
-// 	case "Update":
-// 		args := op.Value.(UpdateArgs)
-
-// 		// log.Printf("Update Recieved, config num %v, shard %d, gid %d, me %d",
-// 		// 	kv.config.Num, args.Shard, kv.gid, kv.me)
-// 		kv.state.setDatabase(args.Shard, args.Database)
-// 		kv.state.setMaxClientSeq(args.Shard, args.MaxClientSeq)
-// 		kv.state.setReceived(args.Shard, true)
-// 		kv.state.updateSeq(args.Shard, args.ID, args.Seq)
-// 	case "Tick":
-// 		break
-// 	default:
-// 		panic("Wrong operation type")
-// 	}
-// 	kv.lastApply++
-// 	kv.filePut(-1, LastApplyPrefix, "", strconv.Itoa(kv.lastApply))
-// }
-
 func (kv *DisKV) Wait(seq int) Op {
 	sleepTime := 10 * time.Microsecond
 	for {
@@ -269,23 +215,6 @@ func (kv *DisKV) Get(args *GetArgs, reply *GetReply) error {
 	return nil
 }
 
-// func (kv *DisKV) getSeq(shard int, clientID string) int {
-// 	seqString, err := kv.fileGet(shard, ClientPrefix, clientID)
-// 	if err != nil {
-// 		return 0
-// 	}
-// 	seq, err := strconv.Atoi(seqString)
-// 	return seq
-// }
-
-// func (kv *DisKV) isReceived(shard int, configNum int) bool {
-// 	received, err := kv.fileGet(shard, ReceivedPrefix, strconv.Itoa(configNum))
-// 	if err != nil {
-// 		return false
-// 	}
-// 	return received == "true"
-// }
-
 // RPC handler for client Put and Append requests
 func (kv *DisKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 	// log.Printf("config num %v, args %v", kv.config.Num, *args)
@@ -323,13 +252,6 @@ func (kv *DisKV) Update(args *UpdateArgs, reply *UpdateReply) error {
 	op := Op{Operation: "Update", Value: *args}
 	kv.Propose(op)
 	reply.Err = OK
-	return nil
-}
-
-func (kv *DisKV) Recover(args *RecoverArgs, reply *RecoverReply) error {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
 	return nil
 }
 
@@ -376,6 +298,7 @@ func (kv *DisKV) Send(shard int, newConfig shardmaster.Config) {
 func (kv *DisKV) tick() {
 	kv.mu.Lock()
 	defer kv.mu.Unlock()
+	kv.state.saveState()
 	config := kv.state.getConfig()
 	newConfig := kv.sm.Query(config.Num + 1)
 
@@ -466,9 +389,6 @@ func (kv *DisKV) isunreliable() bool {
 //   is started, and true to indicate a re-start
 //   after a crash or after a crash with disk loss.
 //
-func (kv *DisKV) RestoreReplica(servers []string) {
-
-}
 
 func StartServer(gid int64, shardmasters []string,
 	servers []string, me int, dir string, restart bool) *DisKV {
@@ -477,13 +397,16 @@ func StartServer(gid int64, shardmasters []string,
 	gob.Register(PutAppendArgs{})
 	gob.Register(UpdateArgs{})
 	gob.Register(GetArgs{})
+	gob.Register(DisKVState{})
 
 	kv := new(DisKV)
 	kv.me = me
 	kv.gid = gid
 	kv.sm = shardmaster.MakeClerk(shardmasters)
 	kv.dir = dir
+
 	kv.state = MakeDisKVState(gid, me, dir, restart)
+
 	// Don't call Join().
 
 	// log.SetOutput(ioutil.Discard)
