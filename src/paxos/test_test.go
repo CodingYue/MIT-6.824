@@ -1,19 +1,15 @@
 package paxos
 
-import (
-	"fmt"
-	"log"
-	"math/rand"
-	"os"
-	"runtime"
-	"strconv"
-	"testing"
-	"time"
-
-	crand "crypto/rand"
-	"encoding/base64"
-	"sync/atomic"
-)
+import "testing"
+import "runtime"
+import "strconv"
+import "os"
+import "time"
+import "fmt"
+import "math/rand"
+import crand "crypto/rand"
+import "encoding/base64"
+import "sync/atomic"
 
 func randstring(n int) string {
 	b := make([]byte, 2*n)
@@ -422,10 +418,6 @@ func TestForgetMem(t *testing.T) {
 		if pxa[i].Min() != 11 {
 			t.Fatalf("expected Min() %v, got %v\n", 11, pxa[i].Min())
 		}
-	}
-
-	for i := 0; i < npaxos; i++ {
-		log.Printf("delete %d, Min() %d", pxa[i].deleteSeq, pxa[i].Min())
 	}
 
 	runtime.GC()
