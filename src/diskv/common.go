@@ -61,13 +61,16 @@ type UpdateReply struct {
 	Err string
 }
 
-type RecoverArgs struct {
+type RecoveryArgs struct {
 }
 
-type RecoverReply struct {
+type RecoveryReply struct {
 	Database     map[int]map[string]string
 	MaxClientSeq map[int]map[string]int
 	Config       shardmaster.Config
 	LastApply    int
 	IsReceived   map[int]bool
+	// DoneMax      []int
+	// SeqMax       int
+	// DeleteSeq    int
 }

@@ -317,13 +317,6 @@ func (kv *DisKV) Update(args *UpdateArgs, reply *UpdateReply) error {
 	return nil
 }
 
-func (kv *DisKV) Recover(args *RecoverArgs, reply *RecoverReply) error {
-	kv.mu.Lock()
-	defer kv.mu.Unlock()
-
-	return nil
-}
-
 func (kv *DisKV) Send(shard int, newConfig shardmaster.Config) {
 
 	database, maxClientSeq := kv.state.fileReadShard(shard)
@@ -444,6 +437,50 @@ func (kv *DisKV) isunreliable() bool {
 	return atomic.LoadInt32(&kv.unreliable) != 0
 }
 
+func (kv *DisKV) HandleDiskLossRecovery(args *RecoveryArgs, reply *RecoveryReply) error {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	reply.Config = kv.state.getConfig()
+	reply.LastApply = kv.state.getLastApply()
+	reply.IsReceived = map[int]bool{}
+	reply.Database = map[int]map[string]string{}
+	reply.MaxClientSeq = map[int]map[string]int{}
+	for shard := 0; shard < shardmaster.NShards; shard++ {
+		reply.IsReceived[shard] = kv.state.getReceived(shard)
+		if reply.Config.Shards[shard] == kv.gid {
+			reply.Database[shard], reply.MaxClientSeq[shard] =
+				kv.state.fileReadShard(shard)
+		}
+	}
+	return nil
+}
+
+func (kv *DisKV) diskLossRecovery(servers []string) {
+	args := &RecoveryArgs{}
+	reply := RecoveryReply{}
+	for {
+		for idx, srv := range servers {
+			if idx == kv.me {
+				continue
+			}
+			ok := call(srv, "DisKV.HandleDiskLossRecovery", args, &reply)
+			if ok {
+				goto OK
+			}
+		}
+	}
+OK:
+	log.Printf("Recovery reply %v", reply)
+	kv.state.setConfig(reply.Config)
+	kv.state.setLastApply(reply.LastApply)
+	for shard := 0; shard < shardmaster.NShards; shard++ {
+		kv.state.setReceived(shard, reply.IsReceived[shard])
+		if reply.Config.Shards[shard] == kv.gid {
+			kv.state.fileReplaceShard(shard, reply.Database[shard], reply.MaxClientSeq[shard])
+		}
+	}
+}
+
 //
 // Start a DisKV server.
 // gid is the ID of the server's replica group.
@@ -473,7 +510,7 @@ func StartServer(gid int64, shardmasters []string,
 	kv.gid = gid
 	kv.sm = shardmaster.MakeClerk(shardmasters)
 	kv.dir = dir
-	kv.state = MakeDisKVState(gid, me, dir, servers, restart)
+	kv.MakeDisKVState(servers, restart)
 	// Don't call Join().
 
 	// log.SetOutput(ioutil.Discard)
@@ -482,7 +519,7 @@ func StartServer(gid int64, shardmasters []string,
 	rpcs := rpc.NewServer()
 	rpcs.Register(kv)
 
-	kv.px = paxos.Make(servers, me, rpcs)
+	kv.px = paxos.MakeWithOptions(servers, me, rpcs, kv.dir+"paxos/", restart)
 
 	// log.SetOutput(os.Stdout)
 

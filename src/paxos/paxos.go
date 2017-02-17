@@ -20,16 +20,18 @@ package paxos
 // px.Min() int -- instances before this seq have been forgotten
 //
 
-import "net"
-import "net/rpc"
-import "log"
-
-import "os"
-import "syscall"
-import "sync"
-import "sync/atomic"
-import "fmt"
-import "math/rand"
+import (
+	"fmt"
+	"log"
+	"math/rand"
+	"net"
+	"net/rpc"
+	"os"
+	"strconv"
+	"sync"
+	"sync/atomic"
+	"syscall"
+)
 
 // px.Status() return values, indicating
 // whether an agreement has been decided,
@@ -55,6 +57,8 @@ type Paxos struct {
 	state *StateMachine
 }
 
+type PaxosLog interface{}
+
 type Result int
 
 const (
@@ -65,28 +69,29 @@ const (
 type PrepareArgs struct {
 	Seq        int
 	ProposalID int
+	Value      PaxosLog
 }
 
 type PrepareReply struct {
 	Reply      Result
 	ProposalID int
-	Value      interface{}
+	Value      PaxosLog
 }
 
-type AccpetArgs struct {
+type AcceptArgs struct {
 	Seq        int
 	ProposalID int
-	Value      interface{}
+	Value      PaxosLog
 }
 
 type AcceptReply struct {
 	Reply Result
-	Value interface{}
+	Value PaxosLog
 }
 
 type DecidedArgs struct {
 	Seq     int
-	Value   interface{}
+	Value   PaxosLog
 	From    int
 	DoneMax int
 }
@@ -98,29 +103,40 @@ type DecidedReply struct {
 func (px *Paxos) HandlePrepare(args *PrepareArgs, reply *PrepareReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
-
+	// log.Printf("Handle Prepare, prepare max %v, proposal id %v", px.state.getPrepareMax(args.Seq), args.ProposalID)
+	if value, decided := px.state.getDecidedValue(args.Seq); decided {
+		reply.ProposalID = args.ProposalID
+		reply.Value = value
+		reply.Reply = Ok
+		return nil
+	}
 	if args.ProposalID > px.state.getPrepareMax(args.Seq) {
 		px.state.setPrepareMax(args.Seq, args.ProposalID)
-		reply.Value = px.state.getAccpetorValue(args.Seq)
-		reply.ProposalID = px.state.getAccpetMax(args.Seq)
+		reply.Value = px.state.getAcceptorValue(args.Seq)
+		reply.ProposalID = px.state.getAcceptMax(args.Seq)
 		reply.Reply = Ok
 	} else {
 		reply.Reply = Reject
 	}
+	// log.Printf("Reply %v", *reply)
 	return nil
 }
 
-func (px *Paxos) HandleAccpet(args *AccpetArgs, reply *AcceptReply) error {
+func (px *Paxos) HandleAccept(args *AcceptArgs, reply *AcceptReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
-
+	if value, decided := px.state.getDecidedValue(args.Seq); decided {
+		reply.Reply = Ok
+		reply.Value = value
+		return nil
+	}
 	if args.ProposalID >= px.state.getPrepareMax(args.Seq) {
 		px.state.setAcceptMax(args.Seq, args.ProposalID)
 		px.state.setPrepareMax(args.Seq, args.ProposalID)
-		px.state.setAccpetorValue(args.Seq, args.Value)
+		px.state.setAcceptorValue(args.Seq, args.Value)
 
 		reply.Reply = Ok
-		reply.Value = px.state.getAccpetorValue(args.Seq)
+		reply.Value = px.state.getAcceptorValue(args.Seq)
 	} else {
 		reply.Reply = Reject
 	}
@@ -156,7 +172,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 	if err != nil {
 		err1 := err.(*net.OpError)
 		if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
-			fmt.Printf("paxos Dial() failed: %v\n", err1)
+			// fmt.Printf("paxos Dial() failed: %v\n", err1)
 		}
 		return false
 	}
@@ -178,7 +194,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 // call Status() to find out if/when agreement
 // is reached.
 //
-func (px *Paxos) Start(seq int, v interface{}) {
+func (px *Paxos) Start(seq int, v PaxosLog) {
 	currentMin := px.Min()
 	px.mu.Lock()
 	defer px.mu.Unlock()
@@ -194,14 +210,15 @@ func (px *Paxos) Start(seq int, v interface{}) {
 	go px.Propose(seq, v)
 }
 
-func (px *Paxos) PreparePhase(seq int, v interface{}, proposalID int) (bool, interface{}) {
+func (px *Paxos) PreparePhase(seq int, v PaxosLog, proposalID int) (bool, PaxosLog) {
+	// log.Printf("Prepare Phase seq %v, proposalID %v, value %v", seq, proposalID, v)
 	peerLen := len(px.peers)
 	prepareReply := make(chan PrepareReply)
 	done := make(chan bool)
 
 	count := 0
 	maxProposalID := -1
-	var value interface{}
+	var value PaxosLog
 	go func() {
 		for {
 			reply, more := <-prepareReply
@@ -223,7 +240,7 @@ func (px *Paxos) PreparePhase(seq int, v interface{}, proposalID int) (bool, int
 	}()
 
 	for _, peer := range px.peers {
-		args := &PrepareArgs{Seq: seq, ProposalID: proposalID}
+		args := &PrepareArgs{Seq: seq, ProposalID: proposalID, Value: v}
 		reply := PrepareReply{}
 		if peer == px.peers[px.me] {
 			px.HandlePrepare(args, &reply)
@@ -236,12 +253,13 @@ func (px *Paxos) PreparePhase(seq int, v interface{}, proposalID int) (bool, int
 	}
 	close(prepareReply)
 	<-done
+	// log.Printf("Finished, Accept %v", count)
 	return count >= peerLen/2+1, value
 }
 
-func (px *Paxos) AccpetPhase(seq int, proposalID int, value interface{}) bool {
+func (px *Paxos) AcceptPhase(seq int, proposalID int, value PaxosLog) bool {
 	peerLen := len(px.peers)
-
+	// log.Printf("Accept Phase seq %v, proposalID %v, value %v", seq, proposalID, value)
 	acceptReply := make(chan AcceptReply)
 	done := make(chan bool)
 	count := 0
@@ -258,12 +276,12 @@ func (px *Paxos) AccpetPhase(seq int, proposalID int, value interface{}) bool {
 		}
 	}()
 	for _, peer := range px.peers {
-		args := &AccpetArgs{Seq: seq, ProposalID: proposalID, Value: value}
+		args := &AcceptArgs{Seq: seq, ProposalID: proposalID, Value: value}
 		reply := AcceptReply{}
 		if peer == px.peers[px.me] {
-			px.HandleAccpet(args, &reply)
+			px.HandleAccept(args, &reply)
 		} else {
-			if ok := call(peer, "Paxos.HandleAccpet", args, &reply); !ok {
+			if ok := call(peer, "Paxos.HandleAccept", args, &reply); !ok {
 				continue
 			}
 		}
@@ -274,7 +292,7 @@ func (px *Paxos) AccpetPhase(seq int, proposalID int, value interface{}) bool {
 	return count >= peerLen/2+1
 }
 
-func (px *Paxos) DecidePhase(seq int, value interface{}) {
+func (px *Paxos) DecidePhase(seq int, value PaxosLog) {
 	for _, peer := range px.peers {
 		args := &DecidedArgs{Seq: seq,
 			Value:   value,
@@ -291,7 +309,7 @@ func (px *Paxos) DecidePhase(seq int, value interface{}) {
 	}
 }
 
-func (px *Paxos) Propose(seq int, v interface{}) {
+func (px *Paxos) Propose(seq int, v PaxosLog) {
 
 	for {
 		peerLen := len(px.peers)
@@ -303,7 +321,7 @@ func (px *Paxos) Propose(seq int, v interface{}) {
 		if !prepareOK {
 			continue
 		}
-		acceptOK := px.AccpetPhase(seq, proposalID, value)
+		acceptOK := px.AcceptPhase(seq, proposalID, value)
 		if !acceptOK {
 			continue
 		}
@@ -380,7 +398,7 @@ func (px *Paxos) Min() int {
 // should just inspect the local peer state;
 // it should not contact other Paxos peers.
 //
-func (px *Paxos) Status(seq int) (Fate, interface{}) {
+func (px *Paxos) Status(seq int) (Fate, PaxosLog) {
 	currentMin := px.Min()
 	px.mu.Lock()
 	defer px.mu.Unlock()
@@ -431,12 +449,51 @@ func (px *Paxos) isunreliable() bool {
 // the ports of all the paxos peers (including this one)
 // are in peers[]. this servers port is peers[me].
 //
+
 func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
+	return MakeWithOptions(peers, me, rpcs, "./default/", false)
+}
+
+func (px *Paxos) makePaxosStateMachine(npaxos int, dir string, restart bool) {
+	state := &StateMachine{}
+	px.state = state
+	state.PrepareMax = map[int]int{}
+	state.AcceptMax = map[int]int{}
+	state.AcceptValue = map[int]PaxosLog{}
+	// state.DecidedValue = map[int]PaxosLog{}
+	// state.DoneMax = make([]int, npaxos)
+	// for i := 0; i < npaxos; i++ {
+	// 	state.DoneMax[i] = -1
+	// }
+	// state.SeqMax = -1
+
+	state.dir = dir + "/paxos-" + strconv.Itoa(px.me)
+	state.me = px.me
+	state.npaxos = npaxos
+	if !restart {
+		os.RemoveAll(state.dir)
+		if _, err := os.Stat(state.dir); err != nil {
+			if err := os.MkdirAll(state.dir, 0777); err != nil {
+				log.Fatalf("Mkdir(%v): %v", state.dir, err)
+			}
+		}
+	} else {
+		if _, err := os.Stat(state.dir); err != nil {
+			if err := os.MkdirAll(state.dir, 0777); err != nil {
+				log.Fatalf("Mkdir(%v): %v", state.dir, err)
+			}
+			panic("Paxos disk loss")
+		}
+	}
+
+}
+
+func MakeWithOptions(peers []string, me int, rpcs *rpc.Server, dir string, restart bool) *Paxos {
 	px := &Paxos{}
 	px.peers = peers
 	px.me = me
 
-	px.state = MakePaxosStateMachine(len(peers))
+	px.makePaxosStateMachine(len(peers), dir, restart)
 	if rpcs != nil {
 		// caller will create socket &c
 		rpcs.Register(px)

@@ -25,19 +25,29 @@ type DisKVState struct {
 	// received     map[int]bool
 }
 
-func MakeDisKVState(gid int64, me int, dir string, servers []string, restart bool) *DisKVState {
+func (kv *DisKV) MakeDisKVState(servers []string, restart bool) {
 	state := &DisKVState{}
-	state.dir = dir
-	state.gid = gid
-	state.me = me
+	kv.state = state
+	state.dir = kv.dir
+	state.gid = kv.gid
+	state.me = kv.me
 	gob.Register(shardmaster.Config{})
 
-	state.setConfig(shardmaster.Config{Num: 0, Groups: map[int64][]string{}})
-	log.Printf("MakeDisKVState get config, %v", state.getConfig())
-	state.setLastApply(0)
-	state.resetReceived()
-
-	return state
+	if !restart {
+		os.RemoveAll(state.dir)
+		state.setConfig(shardmaster.Config{Num: 0, Groups: map[int64][]string{}})
+		state.setLastApply(0)
+		state.resetReceived()
+	} else {
+		log.Printf("Server restarts gid %v, me %v, lastApply %v", kv.gid, kv.me, state.getLastApply())
+		if state.getLastApply() == -1 {
+			log.Printf("Disk loss")
+			if err := os.MkdirAll(state.dir, 0777); err != nil {
+				log.Fatalf("Mkdir(%v): %v", state.dir, err)
+			}
+			kv.diskLossRecovery(servers)
+		}
+	}
 }
 
 func (state *DisKVState) encodeKey(key string) string {
@@ -241,7 +251,6 @@ func (state *DisKVState) fileReadShard(shard int) (
 }
 
 func (state *DisKVState) applyOperation(op Op, seq int) {
-	log.Printf("Apply %v, gid %v, me %v", op, state.gid, state.me)
 
 	switch op.Operation {
 	case "Get":
@@ -272,4 +281,5 @@ func (state *DisKVState) applyOperation(op Op, seq int) {
 		panic("Wrong operation type")
 	}
 	state.setLastApply(state.getLastApply() + 1)
+	log.Printf("Apply %v, gid %v, me %v, seq %v", op, state.gid, state.me, seq)
 }
