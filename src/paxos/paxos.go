@@ -34,9 +34,10 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 )
 
-const Debug = 1
+const Debug = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -198,8 +199,7 @@ func (px *Paxos) HandleDecide(args *DecidedArgs, reply *DecidedReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 	defer px.persistState([]int{args.Seq})
-	instance := px.getInstance(args.Seq)
-	instance.DecidedValue = args.Value
+	px.getInstance(args.Seq).DecidedValue = args.Value
 	px.doneMax[args.From] = args.DoneMax
 	return nil
 }
@@ -347,15 +347,21 @@ func (px *Paxos) AccpetPhase(seq int, proposalID int, value interface{}) bool {
 
 func (px *Paxos) DecidePhase(seq int, value interface{}) {
 	for _, peer := range px.peers {
-		args := &DecidedArgs{Seq: seq, Value: value, From: px.me, DoneMax: px.doneMax[px.me]}
-		reply := DecidedReply{}
-		if peer == px.peers[px.me] {
-			px.HandleDecide(args, &reply)
-		} else {
-			if ok := call(peer, "Paxos.HandleDecide", args, &reply); !ok {
-				continue
+		go func(peer string) {
+			args := &DecidedArgs{Seq: seq, Value: value, From: px.me, DoneMax: px.doneMax[px.me]}
+			reply := DecidedReply{}
+			if peer == px.peers[px.me] {
+				px.HandleDecide(args, &reply)
+			} else {
+				for {
+					if ok := call(peer, "Paxos.HandleDecide", args, &reply); !ok {
+						time.Sleep(50 * time.Millisecond)
+						continue
+					}
+					break
+				}
 			}
-		}
+		}(peer)
 	}
 }
 
@@ -465,7 +471,6 @@ func (px *Paxos) Status(seq int) (Fate, interface{}) {
 	currentMin := px.Min()
 	px.mu.Lock()
 	defer px.mu.Unlock()
-	defer px.persistState([]int{seq})
 	if seq < currentMin {
 		return Forgotten, nil
 	}
