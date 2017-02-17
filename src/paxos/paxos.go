@@ -20,16 +20,30 @@ package paxos
 // px.Min() int -- instances before this seq have been forgotten
 //
 
-import "net"
-import "net/rpc"
-import "log"
+import (
+	"fmt"
+	"io/ioutil"
+	"log"
+	"math/rand"
+	"net"
+	"net/rpc"
+	"os"
+	"persistence"
+	"strconv"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
+)
 
-import "os"
-import "syscall"
-import "sync"
-import "sync/atomic"
-import "fmt"
-import "math/rand"
+const Debug = 1
+
+func DPrintf(format string, a ...interface{}) (n int, err error) {
+	if Debug > 0 {
+		log.Printf(format, a...)
+	}
+	return
+}
 
 // px.Status() return values, indicating
 // whether an agreement has been decided,
@@ -51,6 +65,7 @@ type Paxos struct {
 	rpcCount   int32 // for testing
 	peers      []string
 	me         int // index into peers[]
+	dir        string
 
 	instance  map[int]*instanceStatus
 	seqMax    int
@@ -111,6 +126,29 @@ type DecidedReply struct {
 	Reply Result
 }
 
+func (px *Paxos) persistState(seqs []int) {
+	DPrintf("persist state seqs %v", seqs)
+	success := persistence.ReadTransactionSuccess(px.dir)
+	if success {
+		if err := persistence.SyncTempfile(px.dir); err != nil {
+			panic(err)
+		}
+	}
+	persistence.WriteFile(px.dir, "transaction_success", false)
+	for seq := range seqs {
+		DPrintf("persist instance %v seq, dir %v, value %v", seq, px.dir, *px.getInstance(seq))
+		if err := persistence.WriteTempFile(px.dir, "instance-"+strconv.Itoa(seq), *px.getInstance(seq)); err != nil {
+			panic(err)
+		}
+	}
+	paxos := paxosStatus{
+		SeqMax:    px.seqMax,
+		DoneMax:   px.doneMax,
+		DeleteSeq: px.deleteSeq}
+	persistence.WriteTempFile(px.dir, "paxos_status", paxos)
+	persistence.WriteFile(px.dir, "transaction_success", true)
+}
+
 func (px *Paxos) getInstance(seq int) *instanceStatus {
 	instance, ok := px.instance[seq]
 	if !ok {
@@ -123,6 +161,7 @@ func (px *Paxos) getInstance(seq int) *instanceStatus {
 func (px *Paxos) HandlePrepare(args *PrepareArgs, reply *PrepareReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
+	defer px.persistState([]int{args.Seq})
 
 	instance := px.getInstance(args.Seq)
 	if args.ProposalID > instance.PrepareMax {
@@ -139,6 +178,7 @@ func (px *Paxos) HandlePrepare(args *PrepareArgs, reply *PrepareReply) error {
 func (px *Paxos) HandleAccpet(args *AccpetArgs, reply *AcceptReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
+	defer px.persistState([]int{args.Seq})
 
 	instance := px.getInstance(args.Seq)
 	if args.ProposalID >= instance.PrepareMax {
@@ -157,6 +197,7 @@ func (px *Paxos) HandleAccpet(args *AccpetArgs, reply *AcceptReply) error {
 func (px *Paxos) HandleDecide(args *DecidedArgs, reply *DecidedReply) error {
 	px.mu.Lock()
 	defer px.mu.Unlock()
+	defer px.persistState([]int{args.Seq})
 	instance := px.getInstance(args.Seq)
 	instance.DecidedValue = args.Value
 	px.doneMax[args.From] = args.DoneMax
@@ -184,7 +225,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 	if err != nil {
 		err1 := err.(*net.OpError)
 		if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
-			fmt.Printf("paxos Dial() failed: %v\n", err1)
+			// fmt.Printf("paxos Dial() failed: %v\n", err1)
 		}
 		return false
 	}
@@ -210,6 +251,8 @@ func (px *Paxos) Start(seq int, v interface{}) {
 	currentMin := px.Min()
 	px.mu.Lock()
 	defer px.mu.Unlock()
+	defer px.persistState([]int{seq})
+
 	if seq > px.seqMax {
 		px.seqMax = seq
 	}
@@ -347,7 +390,7 @@ func (px *Paxos) Propose(seq int, v interface{}) {
 func (px *Paxos) Done(seq int) {
 	px.mu.Lock()
 	defer px.mu.Unlock()
-
+	defer px.persistState([]int{})
 	if seq > px.doneMax[px.me] {
 		px.doneMax[px.me] = seq
 	}
@@ -395,6 +438,8 @@ func (px *Paxos) Max() int {
 func (px *Paxos) Min() int {
 	px.mu.Lock()
 	defer px.mu.Unlock()
+
+	seqs := []int{}
 	min := px.doneMax[px.me]
 	for _, v := range px.doneMax {
 		if v < min {
@@ -403,7 +448,9 @@ func (px *Paxos) Min() int {
 	}
 	for ; px.deleteSeq <= min; px.deleteSeq++ {
 		delete(px.instance, px.deleteSeq)
+		seqs = append(seqs, px.deleteSeq)
 	}
+	px.persistState(seqs)
 	return min + 1
 }
 
@@ -418,6 +465,7 @@ func (px *Paxos) Status(seq int) (Fate, interface{}) {
 	currentMin := px.Min()
 	px.mu.Lock()
 	defer px.mu.Unlock()
+	defer px.persistState([]int{seq})
 	if seq < currentMin {
 		return Forgotten, nil
 	}
@@ -460,24 +508,61 @@ func (px *Paxos) isunreliable() bool {
 	return atomic.LoadInt32(&px.unreliable) != 0
 }
 
+func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
+	return MakeWithOptions(peers, me, rpcs, "./paxos-test/", false)
+}
+
 //
 // the application wants to create a paxos peer.
 // the ports of all the paxos peers (including this one)
 // are in peers[]. this servers port is peers[me].
 //
-func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
+func MakeWithOptions(peers []string, me int, rpcs *rpc.Server, dir string, restart bool) *Paxos {
 	px := &Paxos{}
 	px.peers = peers
 	px.me = me
+	px.dir = dir + "paxos-" + strconv.Itoa(px.me)
 
-	px.instance = make(map[int]*instanceStatus)
-	npaxos := len(peers)
-	px.doneMax = make([]int, npaxos)
-	px.deleteSeq = 0
-	for i := 0; i < npaxos; i++ {
-		px.doneMax[i] = -1
+	if !restart {
+		npaxos := len(peers)
+		px.instance = make(map[int]*instanceStatus)
+		px.doneMax = make([]int, npaxos)
+		px.deleteSeq = 0
+		for i := 0; i < npaxos; i++ {
+			px.doneMax[i] = -1
+		}
+		px.seqMax = -1
+	} else {
+		px.instance = make(map[int]*instanceStatus)
+		success := persistence.ReadTransactionSuccess(px.dir)
+		if success {
+			if err := persistence.SyncTempfile(px.dir); err != nil {
+				panic(err)
+			}
+			var paxos paxosStatus
+			if err := persistence.ReadFile(px.dir, "paxos_status", &paxos); err != nil {
+				panic(err)
+			}
+			files, _ := ioutil.ReadDir(px.dir)
+			for _, file := range files {
+				if file.IsDir() {
+					continue
+				}
+				if strings.HasPrefix(file.Name(), "instance-") {
+					var instance instanceStatus
+					if err := persistence.ReadFile(px.dir, file.Name(), &instance); err != nil {
+						panic(err)
+					}
+					seq, err := strconv.Atoi(file.Name()[len("instance-"):])
+					if err != nil {
+						panic(err)
+					}
+					px.instance[seq] = &instance
+				}
+			}
+		}
+
 	}
-	px.seqMax = -1
 
 	if rpcs != nil {
 		// caller will create socket &c

@@ -77,7 +77,7 @@ func WriteTempFile(dir string, name string, content interface{}) error {
 	if content == nil {
 		return nil
 	}
-	tempname := dir + "/temp-" + name
+	tempname := "temp-" + name
 	if err := WriteFile(dir, tempname, content); err != nil {
 		return err
 	}
