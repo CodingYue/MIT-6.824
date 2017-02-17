@@ -1,9 +1,5 @@
 package diskv
 
-import (
-	"shardmaster"
-)
-
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -25,7 +21,7 @@ type PutAppendArgs struct {
 	Key       string
 	Value     string
 	Op        string // "Put" or "Append"
-	ID        string
+	ID        int64
 	Seq       int
 	ConfigNum int
 	Shard     int
@@ -37,7 +33,7 @@ type PutAppendReply struct {
 
 type GetArgs struct {
 	Key       string
-	ID        string
+	ID        int64
 	Seq       int
 	ConfigNum int
 	Shard     int
@@ -50,27 +46,13 @@ type GetReply struct {
 
 type UpdateArgs struct {
 	Database     map[string]string
-	MaxClientSeq map[string]int
+	MaxClientSeq map[int64]int
 	Shard        int
 	ConfigNum    int
 	Seq          int
-	ID           string
+	ID           int64
 }
 
 type UpdateReply struct {
 	Err string
-}
-
-type RecoveryArgs struct {
-}
-
-type RecoveryReply struct {
-	Database     map[int]map[string]string
-	MaxClientSeq map[int]map[string]int
-	Config       shardmaster.Config
-	LastApply    int
-	IsReceived   map[int]bool
-	// DoneMax      []int
-	// SeqMax       int
-	// DeleteSeq    int
 }

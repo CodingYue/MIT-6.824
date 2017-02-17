@@ -951,7 +951,7 @@ func Test5OneLostOneDown(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	ck.Put("a", "c")
 	if ck.Get(k1) != k1v {
-		t.Fatalf("wrong value for k1, k1 %v, wanted %v, got %v", k1, k1v, ck.Get(k1))
+		t.Fatalf("wrong value for k1")
 	}
 	if ck.Get(k2) != k2v {
 		t.Fatalf("wrong value for k2")

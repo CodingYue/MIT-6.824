@@ -7,13 +7,12 @@ import "sync"
 import "fmt"
 import "crypto/rand"
 import "math/big"
-import "strconv"
 
 type Clerk struct {
 	mu       sync.Mutex // one RPC at a time
 	sm       *shardmaster.Clerk
 	config   shardmaster.Config
-	clientID string
+	clientID int64
 	seq      int
 }
 
@@ -27,7 +26,7 @@ func nrand() int64 {
 func MakeClerk(shardmasters []string) *Clerk {
 	ck := new(Clerk)
 	ck.sm = shardmaster.MakeClerk(shardmasters)
-	ck.clientID = strconv.FormatInt(nrand(), 10)
+	ck.clientID = nrand()
 	ck.config = ck.sm.Query(-1)
 	ck.seq = 0
 	return ck
