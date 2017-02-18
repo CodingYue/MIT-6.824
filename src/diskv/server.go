@@ -29,6 +29,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const TIMES_PER_RPC = 20
+
 type ShardState struct {
 	maxClientSeq map[int64]int
 	database     map[string]string
@@ -462,7 +464,7 @@ func StartServer(gid int64, shardmasters []string,
 	rpcs := rpc.NewServer()
 	rpcs.Register(kv)
 
-	kv.px = paxos.Make(servers, me, rpcs)
+	kv.px = paxos.MakeWithOptions(servers, me, rpcs, kv.dir+"/paxos", restart)
 
 	// log.SetOutput(os.Stdout)
 

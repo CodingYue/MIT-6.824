@@ -4,7 +4,7 @@ import "shardmaster"
 import "net/rpc"
 import "time"
 import "sync"
-import "fmt"
+
 import "crypto/rand"
 import "math/big"
 
@@ -49,8 +49,8 @@ func MakeClerk(shardmasters []string) *Clerk {
 // please use call() to send all RPCs, in client.go and server.go.
 // please don't change this function.
 //
-func call(srv string, rpcname string,
-	args interface{}, reply interface{}) bool {
+
+func rpcCall(srv string, rpcname string, args interface{}, reply interface{}) bool {
 	c, errx := rpc.Dial("unix", srv)
 	if errx != nil {
 		return false
@@ -62,7 +62,16 @@ func call(srv string, rpcname string,
 		return true
 	}
 
-	fmt.Println(err)
+	// fmt.Println(err)
+	return false
+}
+
+func call(srv string, rpcname string, args interface{}, reply interface{}) bool {
+	for TIMES := 0; TIMES < TIMES_PER_RPC; TIMES++ {
+		if ok := rpcCall(srv, rpcname, args, reply); ok {
+			return true
+		}
+	}
 	return false
 }
 
