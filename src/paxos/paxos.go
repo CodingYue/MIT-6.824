@@ -46,6 +46,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
+const TIMES_PER_RPC = 10
+
 // px.Status() return values, indicating
 // whether an agreement has been decided,
 // or Paxos has not yet reached agreement,
@@ -128,7 +130,7 @@ type DecidedReply struct {
 }
 
 func (px *Paxos) persistState(seqs []int) {
-	DPrintf("persist state seqs %v", seqs)
+	// DPrintf("persist state seqs %v", seqs)
 	success := persistence.ReadTransactionSuccess(px.dir)
 	if success {
 		if err := persistence.SyncTempfile(px.dir); err != nil {
@@ -137,7 +139,7 @@ func (px *Paxos) persistState(seqs []int) {
 	}
 	persistence.WriteFile(px.dir, "transaction_success", false)
 	for seq := range seqs {
-		DPrintf("persist instance %v seq, dir %v, value %v", seq, px.dir, *px.getInstance(seq))
+		// DPrintf("persist instance %v seq, dir %v, value %v", seq, px.dir, *px.getInstance(seq))
 		if err := persistence.WriteTempFile(px.dir, "instance-"+strconv.Itoa(seq), *px.getInstance(seq)); err != nil {
 			panic(err)
 		}
@@ -220,23 +222,29 @@ func (px *Paxos) HandleDecide(args *DecidedArgs, reply *DecidedReply) error {
 // please use call() to send all RPCs, in client.go and server.go.
 // please do not change this function.
 //
-func call(srv string, name string, args interface{}, reply interface{}) bool {
-	c, err := rpc.Dial("unix", srv)
-	if err != nil {
-		err1 := err.(*net.OpError)
-		if err1.Err != syscall.ENOENT && err1.Err != syscall.ECONNREFUSED {
-			// fmt.Printf("paxos Dial() failed: %v\n", err1)
-		}
+
+func rpcCall(srv string, rpcname string, args interface{}, reply interface{}) bool {
+	c, errx := rpc.Dial("unix", srv)
+	if errx != nil {
 		return false
 	}
 	defer c.Close()
 
-	err = c.Call(name, args, reply)
+	err := c.Call(rpcname, args, reply)
 	if err == nil {
 		return true
 	}
 
-	fmt.Println(err)
+	// fmt.Println(err)
+	return false
+}
+
+func call(srv string, rpcname string, args interface{}, reply interface{}) bool {
+	for TIMES := 0; TIMES < TIMES_PER_RPC; TIMES++ {
+		if ok := rpcCall(srv, rpcname, args, reply); ok {
+			return true
+		}
+	}
 	return false
 }
 
@@ -373,6 +381,7 @@ func (px *Paxos) Propose(seq int, v interface{}) {
 		maxSeen := px.getInstance(seq).PrepareMax
 		px.mu.Unlock()
 		proposalID := (maxSeen+peerLen)/peerLen*peerLen + px.me
+		DPrintf("Propose seq %v, v %v, proposal id %v", seq, v, proposalID)
 		prepareOK, value := px.PreparePhase(seq, v, proposalID)
 		if !prepareOK {
 			continue
