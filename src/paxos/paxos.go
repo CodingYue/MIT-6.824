@@ -226,6 +226,7 @@ func (px *Paxos) HandleDecide(args *DecidedArgs, reply *DecidedReply) error {
 func rpcCall(srv string, rpcname string, args interface{}, reply interface{}) bool {
 	c, errx := rpc.Dial("unix", srv)
 	if errx != nil {
+		// log.Printf("unix error %v", errx)
 		return false
 	}
 	defer c.Close()
@@ -281,6 +282,7 @@ func (px *Paxos) PreparePhase(seq int, v interface{}, proposalID int) (bool, int
 	count := 0
 	maxProposalID := -1
 	var value interface{}
+	received := 0
 	go func() {
 		for {
 			reply, more := <-prepareReply
@@ -288,6 +290,7 @@ func (px *Paxos) PreparePhase(seq int, v interface{}, proposalID int) (bool, int
 				done <- true
 				break
 			}
+			received++
 			if reply.Reply == Ok {
 				count++
 				if reply.ProposalID > maxProposalID {
@@ -315,6 +318,7 @@ func (px *Paxos) PreparePhase(seq int, v interface{}, proposalID int) (bool, int
 	}
 	close(prepareReply)
 	<-done
+	DPrintf("accept %d of received %d, total %d", count, received, len(px.peers))
 	return count >= peerLen/2+1, value
 }
 
@@ -375,25 +379,34 @@ func (px *Paxos) DecidePhase(seq int, value interface{}) {
 
 func (px *Paxos) Propose(seq int, v interface{}) {
 
+	sleepTime := 10 * time.Millisecond
 	for {
+		time.Sleep(sleepTime)
+		if sleepTime < 10*time.Second {
+			sleepTime *= 2
+		}
+		if px.isdead() {
+			return
+		}
 		peerLen := len(px.peers)
 		px.mu.Lock()
 		maxSeen := px.getInstance(seq).PrepareMax
 		px.mu.Unlock()
 		proposalID := (maxSeen+peerLen)/peerLen*peerLen + px.me
-		DPrintf("Propose seq %v, v %v, proposal id %v", seq, v, proposalID)
+		DPrintf("Prepare seq %v, v %v, proposal id %v, me %v", seq, v, proposalID, px.peers[px.me])
 		prepareOK, value := px.PreparePhase(seq, v, proposalID)
 		if !prepareOK {
 			continue
 		}
+		DPrintf("Accept seq %v, v %v, proposal id %v, me %v", seq, v, proposalID, px.peers[px.me])
 		acceptOK := px.AccpetPhase(seq, proposalID, value)
 		if !acceptOK {
 			continue
 		}
+		DPrintf("Decide seq %v, v %v, proposal id %v, me %v", seq, v, proposalID, px.peers[px.me])
 		px.DecidePhase(seq, value)
 		break
 	}
-
 }
 
 //
@@ -557,6 +570,9 @@ func MakeWithOptions(peers []string, me int, rpcs *rpc.Server, dir string, resta
 			if err := persistence.ReadFile(px.dir, "paxos_status", &paxos); err != nil {
 				panic(err)
 			}
+			px.doneMax = paxos.DoneMax
+			px.deleteSeq = paxos.DeleteSeq
+			px.seqMax = paxos.SeqMax
 			files, _ := ioutil.ReadDir(px.dir)
 			for _, file := range files {
 				if file.IsDir() {

@@ -2,7 +2,6 @@ package kvpaxos
 
 import (
 	"crypto/rand"
-	"fmt"
 	"math/big"
 	"net/rpc"
 	"sync"
@@ -61,7 +60,7 @@ func call(srv string, rpcname string,
 		return true
 	}
 
-	fmt.Println(err)
+	// fmt.Println(err)
 	return false
 }
 
