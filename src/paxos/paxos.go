@@ -61,14 +61,15 @@ const (
 )
 
 type Paxos struct {
-	mu         sync.Mutex
-	l          net.Listener
-	dead       int32 // for testing
-	unreliable int32 // for testing
-	rpcCount   int32 // for testing
-	peers      []string
-	me         int // index into peers[]
-	dir        string
+	mu                sync.Mutex
+	l                 net.Listener
+	dead              int32 // for testing
+	unreliable        int32 // for testing
+	rpcCount          int32 // for testing
+	peers             []string
+	me                int // index into peers[]
+	dir               string
+	enablePersistence bool
 
 	instance  map[int]*instanceStatus
 	seqMax    int
@@ -130,6 +131,9 @@ type DecidedReply struct {
 }
 
 func (px *Paxos) persistState(seqs []int) {
+	if !px.enablePersistence {
+		return
+	}
 	// DPrintf("persist state seqs %v", seqs)
 	success := persistence.ReadTransactionSuccess(px.dir)
 	if success {
@@ -536,7 +540,7 @@ func (px *Paxos) isunreliable() bool {
 }
 
 func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
-	return MakeWithOptions(peers, me, rpcs, "./paxos-test/", false)
+	return MakeWithOptions(peers, me, rpcs, "", false)
 }
 
 //
@@ -544,11 +548,17 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 // the ports of all the paxos peers (including this one)
 // are in peers[]. this servers port is peers[me].
 //
-func MakeWithOptions(peers []string, me int, rpcs *rpc.Server, dir string, restart bool) *Paxos {
+func MakeWithOptions(peers []string, me int, rpcs *rpc.Server,
+	dir string, restart bool) *Paxos {
 	px := &Paxos{}
 	px.peers = peers
 	px.me = me
-	px.dir = dir + "paxos-" + strconv.Itoa(px.me)
+	if dir == "" {
+		px.enablePersistence = false
+	} else {
+		px.dir = dir + "/paxos-" + strconv.Itoa(px.me)
+		px.enablePersistence = true
+	}
 
 	if !restart {
 		npaxos := len(peers)
@@ -559,6 +569,9 @@ func MakeWithOptions(peers []string, me int, rpcs *rpc.Server, dir string, resta
 			px.doneMax[i] = -1
 		}
 		px.seqMax = -1
+		if dir != "" {
+			os.RemoveAll(px.dir)
+		}
 	} else {
 		px.instance = make(map[int]*instanceStatus)
 		success := persistence.ReadTransactionSuccess(px.dir)
