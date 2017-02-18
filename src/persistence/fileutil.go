@@ -10,7 +10,7 @@ import (
 	"strings"
 )
 
-const DEBUG = 1
+const DEBUG = 0
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if DEBUG > 0 {
@@ -27,20 +27,26 @@ func ReadTransactionSuccess(dir string) bool {
 	return success
 }
 
-func SyncTempfile(dir string) error {
+func SyncTempfile(dir string, success bool) error {
 	DPrintf("Syncing tempfile dir %v", dir)
 	makeDir(dir)
 	files, _ := ioutil.ReadDir(dir)
 	for _, file := range files {
 		if file.IsDir() {
-			if err := SyncTempfile(dir + "/" + file.Name()); err != nil {
+			if err := SyncTempfile(dir+"/"+file.Name(), success); err != nil {
 				return err
 			}
 		} else {
-			log.Printf("sync temp file, filename %v", file.Name())
 			if strings.HasPrefix(file.Name(), "temp-") {
-				if err := os.Rename(file.Name(), file.Name()[5:]); err != nil {
-					return err
+				tempname := dir + "/" + file.Name()
+				fullname := dir + "/" + file.Name()[5:]
+				DPrintf("sync temp file, filename %v", tempname)
+				if success {
+					if err := os.Rename(tempname, fullname); err != nil {
+						return err
+					}
+				} else {
+					os.Remove(tempname)
 				}
 			}
 		}
@@ -50,12 +56,12 @@ func SyncTempfile(dir string) error {
 
 func ReadFile(dir string, name string, content interface{}) error {
 	makeDir(dir)
-	if _, err := os.Stat(name); err != nil {
+	if _, err := os.Stat(dir + "/" + name); err != nil {
 		return err
 	}
 	if value, err := ioutil.ReadFile(dir + "/" + name); err == nil {
 		if err := decode(string(value), content); err != nil {
-			return err
+			panic(err)
 		}
 	} else {
 		return err
@@ -65,7 +71,10 @@ func ReadFile(dir string, name string, content interface{}) error {
 
 func WriteFile(dir string, name string, content interface{}) error {
 	makeDir(dir)
-	value, _ := encode(content)
+	value, err := encode(content)
+	if err != nil {
+		panic(err)
+	}
 	fullname := dir + "/" + name
 	if err := ioutil.WriteFile(fullname, []byte(value), 0666); err != nil {
 		return err

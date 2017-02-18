@@ -1,16 +1,15 @@
 package diskv
 
 import (
-	"encoding/base32"
 	"encoding/gob"
 	"fmt"
-	"io/ioutil"
 	"log"
 	"math/rand"
 	"net"
 	"net/rpc"
 	"os"
 	"paxos"
+	"persistence"
 	"reflect"
 	"shardmaster"
 	"strconv"
@@ -20,7 +19,7 @@ import (
 	"time"
 )
 
-const Debug = 0
+const Debug = 1
 
 func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
@@ -32,8 +31,8 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 const TIMES_PER_RPC = 20
 
 type ShardState struct {
-	maxClientSeq map[int64]int
-	database     map[string]string
+	MaxClientSeq map[int64]int
+	Database     map[string]string
 }
 
 type Op struct {
@@ -51,165 +50,120 @@ type DisKV struct {
 	px         *paxos.Paxos
 	dir        string // each replica has its own data directory
 
-	gid    int64 // my replica group ID
-	config shardmaster.Config
+	gid int64 // my replica group ID
 
+	config     shardmaster.Config
 	lastApply  int
 	shardState map[int]*ShardState
-	isRecieved map[int]bool
-	// Your definitions here.
+	received   map[int]bool
+
+	modifiedShardBuffer map[int]bool
+	enablePersistence   bool
 }
 
-//
-// these are handy functions that might be useful
-// for reading and writing key/value files, and
-// for reading and writing entire shards.
-// puts the key files for each shard in a separate
-// directory.
-//
+type disKVstatus struct {
+	Config    shardmaster.Config
+	LastApply int
+	Received  map[int]bool
+}
 
-func (kv *DisKV) shardDir(shard int) string {
-	d := kv.dir + "/shard-" + strconv.Itoa(shard) + "/"
-	// create directory if needed.
-	_, err := os.Stat(d)
-	if err != nil {
-		if err := os.Mkdir(d, 0777); err != nil {
-			log.Fatalf("Mkdir(%v): %v", d, err)
+func (kv *DisKV) persistenceStatus() {
+	kv.mu.Lock()
+	defer kv.mu.Unlock()
+	if !kv.enablePersistence {
+		return
+	}
+	success := persistence.ReadTransactionSuccess(kv.dir)
+	if err := persistence.SyncTempfile(kv.dir, success); err != nil {
+		panic(err)
+	}
+	persistence.WriteFile(kv.dir, "transaction_success", false)
+
+	status := disKVstatus{
+		Config:    kv.config,
+		LastApply: kv.lastApply,
+		Received:  kv.received}
+
+	persistence.WriteTempFile(kv.dir, "kv_status", status)
+	DPrintf("Persist shard : %v, gid %v, me %v", kv.modifiedShardBuffer, kv.gid, kv.me)
+	for shard, isModified := range kv.modifiedShardBuffer {
+		if !isModified {
+			continue
 		}
+		DPrintf("persist shard status gid %v, me %v, %v", kv.gid, kv.me, *kv.shardState[shard])
+		persistence.WriteTempFile(kv.dir, "shard_state-"+strconv.Itoa(shard),
+			*kv.shardState[shard])
 	}
-	return d
-}
-
-// cannot use keys in file names directly, since
-// they might contain troublesome characters like /.
-// base32-encode the key to get a file name.
-// base32 rather than base64 b/c Mac has case-insensitive
-// file names.
-func (kv *DisKV) encodeKey(key string) string {
-	return base32.StdEncoding.EncodeToString([]byte(key))
-}
-
-func (kv *DisKV) decodeKey(filename string) (string, error) {
-	key, err := base32.StdEncoding.DecodeString(filename)
-	return string(key), err
-}
-
-// read the content of a key's file.
-func (kv *DisKV) fileGet(shard int, key string) (string, error) {
-	fullname := kv.shardDir(shard) + "/key-" + kv.encodeKey(key)
-	content, err := ioutil.ReadFile(fullname)
-	return string(content), err
-}
-
-// replace the content of a key's file.
-// uses rename() to make the replacement atomic with
-// respect to crashes.
-func (kv *DisKV) filePut(shard int, key string, content string) error {
-	fullname := kv.shardDir(shard) + "/key-" + kv.encodeKey(key)
-	tempname := kv.shardDir(shard) + "/temp-" + kv.encodeKey(key)
-	if err := ioutil.WriteFile(tempname, []byte(content), 0666); err != nil {
-		return err
-	}
-	if err := os.Rename(tempname, fullname); err != nil {
-		return err
-	}
-	return nil
-}
-
-// return content of every key file in a given shard.
-func (kv *DisKV) fileReadShard(shard int) map[string]string {
-	m := map[string]string{}
-	d := kv.shardDir(shard)
-	files, err := ioutil.ReadDir(d)
-	if err != nil {
-		log.Fatalf("fileReadShard could not read %v: %v", d, err)
-	}
-	for _, fi := range files {
-		n1 := fi.Name()
-		if n1[0:4] == "key-" {
-			key, err := kv.decodeKey(n1[4:])
-			if err != nil {
-				log.Fatalf("fileReadShard bad file name %v: %v", n1, err)
-			}
-			content, err := kv.fileGet(shard, key)
-			if err != nil {
-				log.Fatalf("fileReadShard fileGet failed for %v: %v", key, err)
-			}
-			m[key] = content
-		}
-	}
-	return m
-}
-
-// replace an entire shard directory.
-func (kv *DisKV) fileReplaceShard(shard int, m map[string]string) {
-	d := kv.shardDir(shard)
-	os.RemoveAll(d) // remove all existing files from shard.
-	for k, v := range m {
-		kv.filePut(shard, k, v)
-	}
+	persistence.WriteFile(kv.dir, "transaction_success", true)
+	kv.modifiedShardBuffer = map[int]bool{}
+	kv.px.Done(kv.lastApply)
 }
 
 func MakeShardState() *ShardState {
 	shardState := &ShardState{}
-	shardState.database = make(map[string]string)
-	shardState.maxClientSeq = make(map[int64]int)
+	shardState.Database = make(map[string]string)
+	shardState.MaxClientSeq = make(map[int64]int)
 	return shardState
 }
 
-func (kv *DisKV) Apply(op Op) {
+func (kv *DisKV) Apply(op Op, seq int) {
 
-	log.Printf("Apply %v, gid %v, me %v", op, kv.gid, kv.me)
+	log.Printf("Apply %v, gid %v, me %v, seq %v", op, kv.gid, kv.me, seq)
 	switch op.Operation {
 	case "Get":
 		if op.Value != nil {
 			args := op.Value.(GetArgs)
-			log.Printf("Get %v, %v", args.Key, kv.shardState[args.Shard].database[args.Key])
+			log.Printf("Get %v, %v", args.Key, kv.shardState[args.Shard].Database[args.Key])
 
-			if args.Seq > kv.shardState[args.Shard].maxClientSeq[args.ID] {
-				kv.shardState[args.Shard].maxClientSeq[args.ID] = args.Seq
+			if args.Seq > kv.shardState[args.Shard].MaxClientSeq[args.ID] {
+				kv.shardState[args.Shard].MaxClientSeq[args.ID] = args.Seq
+				kv.modifiedShardBuffer[args.Shard] = true
 			}
 		}
 	case "Put":
 		args := op.Value.(PutAppendArgs)
 		stateMachine := kv.shardState[args.Shard]
-		stateMachine.database[args.Key] = args.Value
+		stateMachine.Database[args.Key] = args.Value
 
-		if args.Seq > kv.shardState[args.Shard].maxClientSeq[args.ID] {
-			kv.shardState[args.Shard].maxClientSeq[args.ID] = args.Seq
+		if args.Seq > kv.shardState[args.Shard].MaxClientSeq[args.ID] {
+			kv.shardState[args.Shard].MaxClientSeq[args.ID] = args.Seq
 		}
+		kv.modifiedShardBuffer[args.Shard] = true
 	case "Append":
 		args := op.Value.(PutAppendArgs)
 		stateMachine := kv.shardState[args.Shard]
 
-		value, ok := stateMachine.database[args.Key]
+		value, ok := stateMachine.Database[args.Key]
 		if !ok {
 			value = ""
 		}
-		stateMachine.database[args.Key] = value + args.Value
+		stateMachine.Database[args.Key] = value + args.Value
 
-		log.Printf("After append, %v", kv.shardState[args.Shard].database[args.Key])
+		log.Printf("After append, %v", kv.shardState[args.Shard].Database[args.Key])
 
-		if args.Seq > kv.shardState[args.Shard].maxClientSeq[args.ID] {
-			kv.shardState[args.Shard].maxClientSeq[args.ID] = args.Seq
+		if args.Seq > kv.shardState[args.Shard].MaxClientSeq[args.ID] {
+			kv.shardState[args.Shard].MaxClientSeq[args.ID] = args.Seq
 		}
+		kv.modifiedShardBuffer[args.Shard] = true
 	case "Update":
 		args := op.Value.(UpdateArgs)
 		stateMachine := kv.shardState[args.Shard]
 
-		kv.isRecieved[args.Shard] = true
+		kv.received[args.Shard] = true
 		log.Printf("Update Recieved, config num %v, shard %d, gid %d, me %d",
 			kv.config.Num, args.Shard, kv.gid, kv.me)
-		stateMachine.database = args.Database
-		stateMachine.maxClientSeq = args.MaxClientSeq
+		stateMachine.Database = args.Database
+		stateMachine.MaxClientSeq = args.MaxClientSeq
 
-		if args.Seq > kv.shardState[args.Shard].maxClientSeq[args.ID] {
-			kv.shardState[args.Shard].maxClientSeq[args.ID] = args.Seq
+		if args.Seq > kv.shardState[args.Shard].MaxClientSeq[args.ID] {
+			kv.shardState[args.Shard].MaxClientSeq[args.ID] = args.Seq
 		}
+		kv.modifiedShardBuffer[args.Shard] = true
 	default:
 		break
 	}
 	kv.lastApply++
+	DPrintf("After apply modified shard buffer : %v", kv.modifiedShardBuffer)
 }
 
 func (kv *DisKV) Wait(seq int) Op {
@@ -231,13 +185,12 @@ func (kv *DisKV) Propose(op Op) {
 		kv.px.Start(seq, op)
 		value := kv.Wait(seq)
 		if seq > kv.lastApply {
-			kv.Apply(value)
+			kv.Apply(value, seq)
 		}
 		if reflect.DeepEqual(value, op) {
 			break
 		}
 	}
-	kv.px.Done(kv.lastApply)
 }
 
 func (kv *DisKV) Get(args *GetArgs, reply *GetReply) error {
@@ -249,10 +202,9 @@ func (kv *DisKV) Get(args *GetArgs, reply *GetReply) error {
 	}
 	// if args.Seq > kv.shardState[args.Shard].maxClientSeq[args.ID] {
 	op := Op{Operation: "Get", Value: *args}
-	log.Printf("Get haha: %v", *args)
 	kv.Propose(op)
 	// }
-	value, ok := kv.shardState[args.Shard].database[args.Key]
+	value, ok := kv.shardState[args.Shard].Database[args.Key]
 	if !ok {
 		reply.Err = ErrNoKey
 		reply.Value = "NO KEY"
@@ -272,7 +224,7 @@ func (kv *DisKV) PutAppend(args *PutAppendArgs, reply *PutAppendReply) error {
 		reply.Err = ErrWrongGroup
 		return nil
 	}
-	if args.Seq <= kv.shardState[args.Shard].maxClientSeq[args.ID] {
+	if args.Seq <= kv.shardState[args.Shard].MaxClientSeq[args.ID] {
 		reply.Err = OK
 		return nil
 	}
@@ -288,7 +240,7 @@ func (kv *DisKV) Update(args *UpdateArgs, reply *UpdateReply) error {
 
 	//log.Printf("args %v", *args)
 
-	if args.Seq <= kv.shardState[args.Shard].maxClientSeq[args.ID] {
+	if args.Seq <= kv.shardState[args.Shard].MaxClientSeq[args.ID] {
 		reply.Err = OK
 		return nil
 	}
@@ -309,8 +261,8 @@ func (kv *DisKV) Send(shard int, newConfig shardmaster.Config) {
 		ID:           kv.gid,
 		Seq:          kv.config.Num,
 		ConfigNum:    kv.config.Num,
-		Database:     kv.shardState[shard].database,
-		MaxClientSeq: kv.shardState[shard].maxClientSeq}
+		Database:     kv.shardState[shard].Database,
+		MaxClientSeq: kv.shardState[shard].MaxClientSeq}
 	reply := UpdateReply{}
 
 	gid := newConfig.Shards[shard]
@@ -372,7 +324,7 @@ func (kv *DisKV) tick() {
 			allRecieved := true
 			for shard := 0; shard < shardmaster.NShards; shard++ {
 				if kv.config.Shards[shard] != 0 && kv.config.Shards[shard] != kv.gid && newConfig.Shards[shard] == kv.gid {
-					if !kv.isRecieved[shard] {
+					if !kv.received[shard] {
 						allRecieved = false
 						log.Printf("gid %v, me %v, shard %v not recieved, Config %v", kv.gid, kv.me, shard, kv.config.Num)
 						break
@@ -388,10 +340,11 @@ func (kv *DisKV) tick() {
 		for shard := 0; shard < shardmaster.NShards; shard++ {
 			if kv.config.Shards[shard] == kv.gid && newConfig.Shards[shard] != kv.gid {
 				kv.shardState[shard] = MakeShardState()
+				kv.modifiedShardBuffer[shard] = true
 			}
 		}
 		kv.config = newConfig
-		kv.isRecieved = make(map[int]bool)
+		kv.received = make(map[int]bool)
 	}
 }
 
@@ -447,11 +400,45 @@ func StartServer(gid int64, shardmasters []string,
 	kv.me = me
 	kv.gid = gid
 	kv.sm = shardmaster.MakeClerk(shardmasters)
-	kv.dir = dir
-	kv.config = shardmaster.Config{Num: 0, Groups: map[int64][]string{}}
-	kv.shardState = make(map[int]*ShardState)
+	kv.dir = dir + "/key_value"
+	kv.modifiedShardBuffer = map[int]bool{}
+	kv.enablePersistence = true
+	kv.shardState = map[int]*ShardState{}
 	for shard := 0; shard < shardmaster.NShards; shard++ {
 		kv.shardState[shard] = MakeShardState()
+	}
+	if !restart {
+		os.RemoveAll(kv.dir)
+		kv.config = shardmaster.Config{Num: 0, Groups: map[int64][]string{}}
+		kv.shardState = make(map[int]*ShardState)
+		for shard := 0; shard < shardmaster.NShards; shard++ {
+			kv.shardState[shard] = MakeShardState()
+		}
+	} else {
+		DPrintf("Restart server gid %v, me %v, dir %v", gid, me, kv.dir)
+		success := persistence.ReadTransactionSuccess(kv.dir)
+		if err := persistence.SyncTempfile(kv.dir, success); err != nil {
+			panic(err)
+		}
+		var kvstatus disKVstatus
+		if err := persistence.ReadFile(kv.dir, "kv_status", &kvstatus); err != nil {
+			panic(err)
+		}
+		kv.config = kvstatus.Config
+		kv.lastApply = kvstatus.LastApply
+		kv.received = kvstatus.Received
+		DPrintf("restart kv status %v", kvstatus)
+		for shard := 0; shard < shardmaster.NShards; shard++ {
+			filename := "shard_state-" + strconv.Itoa(shard)
+			if _, err := os.Stat(kv.dir + "/" + filename); err == nil {
+				status := ShardState{}
+				if err := persistence.ReadFile(kv.dir, filename, &status); err != nil {
+					panic(err)
+				}
+				DPrintf("restart shard state gid %v, me %v, %v", kv.gid, kv.me, status)
+				kv.shardState[shard] = &status
+			}
+		}
 	}
 
 	// Your initialization code here.
@@ -464,7 +451,7 @@ func StartServer(gid int64, shardmasters []string,
 	rpcs := rpc.NewServer()
 	rpcs.Register(kv)
 
-	kv.px = paxos.MakeWithOptions(servers, me, rpcs, kv.dir+"/paxos", restart)
+	kv.px = paxos.MakeWithOptions(servers, me, rpcs, dir+"/paxos", restart)
 
 	// log.SetOutput(os.Stdout)
 
@@ -511,6 +498,13 @@ func StartServer(gid int64, shardmasters []string,
 		for kv.isdead() == false {
 			kv.tick()
 			time.Sleep(250 * time.Millisecond)
+		}
+	}()
+
+	go func() {
+		for kv.isdead() == false {
+			kv.persistenceStatus()
+			time.Sleep(1 * time.Second)
 		}
 	}()
 
