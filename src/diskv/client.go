@@ -67,10 +67,8 @@ func rpcCall(srv string, rpcname string, args interface{}, reply interface{}) bo
 }
 
 func call(srv string, rpcname string, args interface{}, reply interface{}) bool {
-	for TIMES := 0; TIMES < TIMES_PER_RPC; TIMES++ {
-		if ok := rpcCall(srv, rpcname, args, reply); ok {
-			return true
-		}
+	if ok := rpcCall(srv, rpcname, args, reply); ok {
+		return true
 	}
 	return false
 }

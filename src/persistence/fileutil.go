@@ -61,7 +61,7 @@ func ReadFile(dir string, name string, content interface{}) error {
 	}
 	if value, err := ioutil.ReadFile(dir + "/" + name); err == nil {
 		if err := decode(string(value), content); err != nil {
-			panic(err)
+			return err
 		}
 	} else {
 		return err

@@ -71,20 +71,20 @@ type Paxos struct {
 	dir               string
 	enablePersistence bool
 
-	instance  map[int]*instanceStatus
+	instance  map[int]*InstanceStatus
 	seqMax    int
 	doneMax   []int
 	deleteSeq int
 	// Your data here.
 }
-type instanceStatus struct {
+type InstanceStatus struct {
 	PrepareMax   int
 	AcceptMax    int
 	AcceptValue  interface{}
 	DecidedValue interface{}
 }
 
-type paxosStatus struct {
+type PaxosStatus struct {
 	SeqMax    int
 	DoneMax   []int
 	DeleteSeq int
@@ -130,6 +130,20 @@ type DecidedReply struct {
 	Reply Result
 }
 
+func (px *Paxos) GetRecoveryStatus() (PaxosStatus, map[int]InstanceStatus) {
+	px.mu.Lock()
+	defer px.mu.Unlock()
+	paxos := PaxosStatus{
+		SeqMax:    px.seqMax,
+		DoneMax:   px.doneMax,
+		DeleteSeq: px.deleteSeq}
+	instances := map[int]InstanceStatus{}
+	for k, v := range px.instance {
+		instances[k] = *v
+	}
+	return paxos, instances
+}
+
 func (px *Paxos) persistState(seqs []int) {
 	if !px.enablePersistence {
 		return
@@ -142,7 +156,7 @@ func (px *Paxos) persistState(seqs []int) {
 	}
 	persistence.WriteFile(px.dir, "transaction_success", false)
 
-	paxos := paxosStatus{
+	paxos := PaxosStatus{
 		SeqMax:    px.seqMax,
 		DoneMax:   px.doneMax,
 		DeleteSeq: px.deleteSeq}
@@ -160,10 +174,10 @@ func (px *Paxos) persistState(seqs []int) {
 	persistence.WriteFile(px.dir, "transaction_success", true)
 }
 
-func (px *Paxos) getInstance(seq int) *instanceStatus {
+func (px *Paxos) getInstance(seq int) *InstanceStatus {
 	instance, ok := px.instance[seq]
 	if !ok {
-		instance = &instanceStatus{AcceptMax: -1, PrepareMax: -1, AcceptValue: nil, DecidedValue: nil}
+		instance = &InstanceStatus{AcceptMax: -1, PrepareMax: -1, AcceptValue: nil, DecidedValue: nil}
 		px.instance[seq] = instance
 	}
 	return instance
@@ -413,6 +427,7 @@ func (px *Paxos) Propose(seq int, v interface{}) {
 		}
 		DPrintf("Decide seq %v, v %v, proposal id %v, me %v", seq, v, proposalID, px.peers[px.me])
 		px.DecidePhase(seq, value)
+		// log.Printf("Check infinite loop, restore replica")
 		break
 	}
 }
@@ -427,6 +442,7 @@ func (px *Paxos) Done(seq int) {
 	px.mu.Lock()
 	defer px.mu.Unlock()
 	defer px.persistState([]int{})
+	// log.Printf("me %v, doneMax %v", px.me, px.doneMax)
 	if seq > px.doneMax[px.me] {
 		px.doneMax[px.me] = seq
 	}
@@ -543,8 +559,22 @@ func (px *Paxos) isunreliable() bool {
 	return atomic.LoadInt32(&px.unreliable) != 0
 }
 
+func (px *Paxos) RestoreReplica(paxos PaxosStatus, instances map[int]InstanceStatus) {
+	px.seqMax = paxos.SeqMax
+	px.deleteSeq = paxos.DeleteSeq
+	px.doneMax = paxos.DoneMax
+	seqs := []int{}
+	for k, v := range instances {
+		status := v
+		px.instance[k] = &status
+		seqs = append(seqs, k)
+	}
+	log.Printf("Restore replica donemax : %v, instances %v", px.doneMax, instances)
+	px.persistState(seqs)
+}
+
 func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
-	return MakeWithOptions(peers, me, rpcs, "", false)
+	return MakeWithOptions(peers, me, rpcs, "", false, false)
 }
 
 //
@@ -553,7 +583,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 // are in peers[]. this servers port is peers[me].
 //
 func MakeWithOptions(peers []string, me int, rpcs *rpc.Server,
-	dir string, restart bool) *Paxos {
+	dir string, restart bool, hasInited bool) *Paxos {
 	px := &Paxos{}
 	px.peers = peers
 	px.me = me
@@ -564,49 +594,50 @@ func MakeWithOptions(peers []string, me int, rpcs *rpc.Server,
 		px.enablePersistence = true
 	}
 
+	px.instance = make(map[int]*InstanceStatus)
+	npaxos := len(peers)
+	px.doneMax = make([]int, npaxos)
+	px.deleteSeq = 0
+	for i := 0; i < npaxos; i++ {
+		px.doneMax[i] = -1
+	}
+	px.seqMax = -1
 	if !restart {
-		npaxos := len(peers)
-		px.instance = make(map[int]*instanceStatus)
-		px.doneMax = make([]int, npaxos)
-		px.deleteSeq = 0
-		for i := 0; i < npaxos; i++ {
-			px.doneMax[i] = -1
-		}
-		px.seqMax = -1
 		if dir != "" {
 			os.RemoveAll(px.dir)
 		}
 	} else {
-		px.instance = make(map[int]*instanceStatus)
-		success := persistence.ReadTransactionSuccess(px.dir)
+		if hasInited {
+			success := persistence.ReadTransactionSuccess(px.dir)
 
-		if err := persistence.SyncTempfile(px.dir, success); err != nil {
-			panic(err)
-		}
-		var paxos paxosStatus
-		if err := persistence.ReadFile(px.dir, "paxos_status", &paxos); err != nil {
-			panic(err)
-		}
-		// log.Printf("paxos restarts, me %v, status %v", px.me, paxos)
-		px.doneMax = paxos.DoneMax
-		px.deleteSeq = paxos.DeleteSeq
-		px.seqMax = paxos.SeqMax
-		files, _ := ioutil.ReadDir(px.dir)
-		for _, file := range files {
-			if file.IsDir() {
-				continue
+			if err := persistence.SyncTempfile(px.dir, success); err != nil {
+				panic(err)
 			}
-			if strings.HasPrefix(file.Name(), "instance-") {
-				var instance instanceStatus
-				if err := persistence.ReadFile(px.dir, file.Name(), &instance); err != nil {
-					panic(err)
+			var paxos PaxosStatus
+			if err := persistence.ReadFile(px.dir, "paxos_status", &paxos); err != nil {
+				panic(err)
+			}
+			// log.Printf("paxos restarts, me %v, status %v", px.me, paxos)
+			px.doneMax = paxos.DoneMax
+			px.deleteSeq = paxos.DeleteSeq
+			px.seqMax = paxos.SeqMax
+			files, _ := ioutil.ReadDir(px.dir)
+			for _, file := range files {
+				if file.IsDir() {
+					continue
 				}
-				seq, err := strconv.Atoi(file.Name()[len("instance-"):])
-				if err != nil {
-					panic(err)
+				if strings.HasPrefix(file.Name(), "instance-") {
+					var instance InstanceStatus
+					if err := persistence.ReadFile(px.dir, file.Name(), &instance); err != nil {
+						panic(err)
+					}
+					seq, err := strconv.Atoi(file.Name()[len("instance-"):])
+					if err != nil {
+						panic(err)
+					}
+					px.instance[seq] = &instance
+					// log.Printf("paxos restarts instance, me %v, status[%v]=%v", px.me, seq, instance)
 				}
-				px.instance[seq] = &instance
-				// log.Printf("paxos restarts instance, me %v, status[%v]=%v", px.me, seq, instance)
 			}
 		}
 

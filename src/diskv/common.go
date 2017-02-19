@@ -1,5 +1,9 @@
 package diskv
 
+import (
+	"paxos"
+)
+
 //
 // Sharded key/value server.
 // Lots of replica groups, each running op-at-a-time paxos.
@@ -55,4 +59,14 @@ type UpdateArgs struct {
 
 type UpdateReply struct {
 	Err string
+}
+
+type RecoveryArgs struct {
+}
+
+type RecoveryReply struct {
+	KV            disKVstatus
+	KVShardState  map[int]ShardState
+	Paxos         paxos.PaxosStatus
+	PaxosInstance map[int]paxos.InstanceStatus
 }

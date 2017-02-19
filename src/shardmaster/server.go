@@ -1,19 +1,21 @@
 package shardmaster
 
-import "net"
-import "fmt"
-import "net/rpc"
-import "log"
-
-import "paxos"
-import "sync"
-import "sync/atomic"
-import "os"
-import "syscall"
-import "encoding/gob"
-import "math/rand"
-import "time"
-import "reflect"
+import (
+	"encoding/gob"
+	"errors"
+	"fmt"
+	"log"
+	"math/rand"
+	"net"
+	"net/rpc"
+	"os"
+	"paxos"
+	"reflect"
+	"sync"
+	"sync/atomic"
+	"syscall"
+	"time"
+)
 
 type ShardMaster struct {
 	mu         sync.Mutex
@@ -113,31 +115,36 @@ func (sm *ShardMaster) Apply(op Op) {
 	sm.lastApply++
 }
 
-func (sm *ShardMaster) Wait(seq int) Op {
+func (sm *ShardMaster) Wait(seq int) (Op, error) {
 	sleepTime := 10 * time.Microsecond
-	for {
+	for iters := 0; iters < 15; iters++ {
 		decided, value := sm.px.Status(seq)
 		if decided == paxos.Decided {
-			return value.(Op)
+			return value.(Op), nil
 		}
 		time.Sleep(sleepTime)
 		if sleepTime < 10*time.Second {
 			sleepTime *= 2
 		}
 	}
+	return Op{}, errors.New("Wait for too long")
 }
 
-func (sm *ShardMaster) Propose(op Op) {
+func (sm *ShardMaster) Propose(op Op) error {
 	seq := sm.lastApply + 1
 	for {
 		sm.px.Start(seq, op)
-		value := sm.Wait(seq)
+		value, err := sm.Wait(seq)
+		if err != nil {
+			return err
+		}
 		sm.Apply(value)
 		if reflect.DeepEqual(value, op) {
 			break
 		}
 		seq++
 	}
+	return nil
 }
 
 func (sm *ShardMaster) Join(args *JoinArgs, reply *JoinReply) error {
@@ -168,7 +175,9 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 	op := Op{Args: *args, Operation: Query}
-	sm.Propose(op)
+	if err := sm.Propose(op); err != nil {
+		return err
+	}
 	for i := 0; i < sm.lastApply; i++ {
 		if sm.configs[i].Num == args.Num {
 			reply.Config = sm.configs[i]
