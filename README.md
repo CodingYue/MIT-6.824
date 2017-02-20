@@ -224,3 +224,116 @@ If duplicated request was sending to server, server must response SUCCESS messag
 Because, an operation was successfully applied but server didn't response with SUCCESS message (unreliable). Under this circumstance, 
 server meets the same operation should response SUCCESS message otherwise client cannot move on.
 
+## Lab5 : Persistence
+
+### Design
+#### Persistence
+
+##### File Operations
+
+```
+func WriteFile(dir string, name string, content interface{}) error 
+func ReadFile(dir string, name string, content interface{}) error 
+```
+
+WriteFile's content is data needed to be persisted. <br>
+ReadFile's content is data address needed to be restored from file.<br>
+I use `gob` to encode and decode content.<br>
+
+##### Paxos 
+
+Refine paxos with two status : InstanceStatus, PaxosStatus.<br>
+```
+type InstanceStatus struct {
+	PrepareMax   int
+	AcceptMax    int
+	AcceptValue  interface{}
+	DecidedValue interface{}
+}
+
+type PaxosStatus struct {
+	SeqMax    int
+	DoneMax   []int
+	DeleteSeq int
+}
+```
+Each seq was mapped to an InstanceStatus.
+And every paxos server contains map[int]InstanceStatus, PaxosStatus
+
+Paxos needs save its state before it responses to statemachine.
+
+##### DisKV
+
+Refin KV with two status : disKVstatus, ShardState.<br>
+```
+type ShardState struct {
+	MaxClientSeq map[int64]int
+	Database     map[string]string
+}
+type disKVstatus struct {
+	Config    shardmaster.Config
+	LastApply int
+	Received  map[int]bool
+}
+```
+
+Similarly, each shard was mapped into a ShardState.
+
+Due to performance reason, I didn't save DisKV state frequently. 
+Just because if DisKV didn't tell paxos to forget some instances, the instance will be 
+persisted in paxos servers. Saving state is more likely a checkpoint of replica's status, 
+after save the checkpoint, we can delete the instances which was applied to state machine from paxos servers.
+
+#### Transaction File Operations
+
+Saving status possiblely results in mutilple files edit. To ensure state machines correctness, 
+transaction files write should be taken into consideration.
+
+I created `transaction_success` file, indicates whether previous transation was successfully commited.<br>
+Writing/reading `transactoin_success` are considered atomicity.
+Failure during processes show the result inconsistency of file, which also means transaction oepration failed.<br>
+
+File write during transaction process, will use API: <br>
+`func WriteTempFile(dir string, name string, content interface{}) error `<br>
+which is similar to `WriteFile` but add prefix `"temp-"` to `name`.
+
+API `func SyncTempfile(dir string, success bool) error `<br>
+if `success` is `true`:<br>
+rename all files which have name with `"temp-"` prefix to filename without `"temp-"`.
+delete all files which have name with `"temp"`
+
+
+Transaction write example:
+```
+    read transaction_success.
+    SyncTempfile(dir, transaction_success)
+    write transaction_success false
+    WriteTempFile ...
+    WriteTempFile ...
+    ...
+    write transaction_success true
+```
+
+Read example:
+```
+    read transaction_success.
+    SyncTempfile(dir, transaction_success)
+    wrte transaction_success false
+    ReadFile ...
+    ReadFile ...
+    ...
+```
+
+#### Replica Failover
+
+##### Local recovery (disk not loss)
+Trivial.
+
+##### Remote recovery (disk loss)
+Ask for all other servers about their status, and restore it. <br>
+In addition, replica must wait for majority of replicas' response and restore replica.
+Because, if replica restores some insufficiently up-to-date paxos status, increase the nubmer 
+of insufficiently up-to-date servers, reach to a majority, which will result instances' loss.
+
+After recoevry, must writle `has_inited` file to prevent failing again during recovery process. 
+(eg. half of data persisted.)
