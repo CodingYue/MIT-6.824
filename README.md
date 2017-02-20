@@ -14,6 +14,10 @@ MIT distributed system sprint 2015
  * [Lab4: Sharded Key/Value Service](#lab4-sharded-keyvalue-service)
 	 * [Part A: The Shard Master](#part-a-the-shard-master)
 	 * [Part B: Sharded Key/Value Server](#part-b-sharded-keyvalue-server)
+ * [Lab5: Persistence](#lab5--persistence)
+    * [Persistence](#persistence)
+    * [Transaction File Operations](#transaction-file-operations)
+    * [Replica Failover](#replica-failover)
 
 ## Lab1 : MapReduce
 
@@ -226,10 +230,9 @@ server meets the same operation should response SUCCESS message otherwise client
 
 ## Lab5 : Persistence
 
-### Design
-#### Persistence
+### Persistence
 
-##### File Operations
+#### File Operations
 
 ```
 func WriteFile(dir string, name string, content interface{}) error 
@@ -240,7 +243,7 @@ WriteFile's content is data needed to be persisted. <br>
 ReadFile's content is data address needed to be restored from file.<br>
 I use `gob` to encode and decode content.<br>
 
-##### Paxos 
+#### Paxos 
 
 Refine paxos with two status : InstanceStatus, PaxosStatus.<br>
 ```
@@ -262,7 +265,7 @@ And every paxos server contains map[int]InstanceStatus, PaxosStatus
 
 Paxos needs save its state before it responses to statemachine.
 
-##### DisKV
+#### DisKV
 
 Refin KV with two status : disKVstatus, ShardState.<br>
 ```
@@ -284,7 +287,7 @@ Just because if DisKV didn't tell paxos to forget some instances, the instance w
 persisted in paxos servers. Saving state is more likely a checkpoint of replica's status, 
 after save the checkpoint, we can delete the instances which was applied to state machine from paxos servers.
 
-#### Transaction File Operations
+### Transaction File Operations
 
 Saving status possiblely results in mutilple files edit. To ensure state machines correctness, 
 transaction files write should be taken into consideration.
@@ -324,16 +327,16 @@ Read example:
     ...
 ```
 
-#### Replica Failover
+### Replica Failover
 
-##### Local recovery (disk not loss)
+#### Local recovery (disk not loss)
 Trivial.
 
-##### Remote recovery (disk loss)
+#### Remote recovery (disk loss)
 Ask for all other servers about their status, and restore it. <br>
 In addition, replica must wait for majority of replicas' response and restore replica.
 Because, if replica restores some insufficiently up-to-date paxos status, increase the nubmer 
 of insufficiently up-to-date servers, reach to a majority, which will result instances' loss.
 
 After recoevry, must writle `has_inited` file to prevent failing again during recovery process. 
-(eg. half of data persisted.)
+(eg. zhalf of data persisted.)
